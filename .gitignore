@@ -1,0 +1,9 @@
+data/
+*.gz
+*.hdf5
+*.h5
+__pycache__/
+test_runs/
+daschlab_*/
+.venv/
+astro/

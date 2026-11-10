@@ -1,0 +1,8 @@
+# Solar (projects 13, 14, 16) and DASCH (project 03) packages.
+# In cloud sessions .claude/hooks/session-start.sh installs these in the background
+# (starters 03, 13, 14, 16 wait for it, or install what's missing),
+# because adding them to the setup script makes it run past its time limit.
+daschlab
+dkist
+drms
+sunpy[net]

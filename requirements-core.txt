@@ -1,0 +1,18 @@
+# Core packages: installed by the cloud environment's setup script (setup_script.sh).
+# Keep this list in sync with the package list in setup_script.sh.
+alerce
+astropy
+astroquery
+gwpy
+lightkurve
+matplotlib
+numpy
+pandas
+pyvo
+requests
+scikit-learn
+scipy
+skyfield
+sparclclient
+plotly
+streamlit

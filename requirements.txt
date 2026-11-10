@@ -1,0 +1,3 @@
+# Everything, for running on your own computer: pip install -r requirements.txt
+-r requirements-core.txt
+-r requirements-extras.txt
