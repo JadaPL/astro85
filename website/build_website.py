@@ -14,6 +14,7 @@ NIST Chemistry WebBook. Downloads are cached in data/ (never committed).
 from pathlib import Path
 import html
 import json
+import math
 import re
 
 import numpy as np
@@ -30,13 +31,16 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / 'data'
 OUT = ROOT / 'docs' / 'index.html'
 
-# Colors: the same one-color-per-mass scheme as the notebook
-COLORS = {78: '#2a78d6', 91: '#eb6834', 50: '#1baf7a', 77: '#eda100',
-          92: '#e87ba4', 112: '#008300', 69: '#6250d6', 127: '#e34948'}
+# Colors: the same one-color-per-mass scheme as the notebook, in the darker steps made for a dark background
+# (checked for colorblind safety against the chart panel color, #15121e)
+COLORS = {78: '#3987e5', 91: '#d95926', 50: '#199e70', 77: '#c98500',
+          92: '#d55181', 112: '#008300', 69: '#9085e9', 127: '#e66767'}
 NAMES = {78: "m/z 78 · benzene's weight", 91: "m/z 91 · toluene's main piece", 50: 'm/z 50',
          77: 'm/z 77 · benzene piece', 92: "m/z 92 · toluene's weight", 112: "m/z 112 · chlorobenzene's weight",
          69: 'm/z 69 · mystery substance', 127: 'm/z 127 · mystery substance'}
-INK, INK2, GRAY, GRID, AXIS, SHADE = '#0b0b0b', '#52514e', '#898781', '#e1e0d9', '#c3c2b7', '#f0efec'
+# Chart ink on the dark "space" panels: text, secondary text, reference gray, gridlines, axis lines, shaded bands
+INK, INK2, GRAY, GRID, AXIS, SHADE = '#f3eef8', '#b9b2c6', '#8f8a99', 'rgba(255,255,255,0.07)', 'rgba(255,255,255,0.22)', 'rgba(255,255,255,0.05)'
+MUTED_BAR, MENU_BG = '#4d475e', '#1d1828'
 
 
 # ---------------------------------------------------------------------------
@@ -160,11 +164,14 @@ def peak_area(column, mass, time_s, before=20, after=40):
 # 2. The interactive figures
 # ---------------------------------------------------------------------------
 def tidy(fig, height):
-    # The same calm look for every chart: light gridlines, readable fonts, legend on top
-    fig.update_layout(template='plotly_white', height=height, margin=dict(l=70, r=24, t=56, b=56),
-                      font=dict(family='system-ui, -apple-system, Segoe UI, sans-serif', size=14, color=INK),
+    # The same look for every chart: transparent background (the dark page panel shows through),
+    # faint gridlines, readable fonts, legend on top
+    fig.update_layout(template='plotly_dark', height=height, margin=dict(l=70, r=24, t=56, b=56),
+                      font=dict(family='Inter, system-ui, -apple-system, Segoe UI, sans-serif', size=14, color=INK),
                       legend=dict(orientation='h', x=0, y=1.02, yanchor='bottom'),
-                      hoverlabel=dict(font_size=13), paper_bgcolor='white', plot_bgcolor='white')
+                      hoverlabel=dict(font_size=13, bgcolor=MENU_BG, bordercolor='rgba(255,255,255,0.25)', font_color=INK),
+                      paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      modebar=dict(bgcolor='rgba(0,0,0,0)', color='#8f8a99', activecolor='#e8794a'))
     fig.update_xaxes(gridcolor=GRID, linecolor=AXIS, zeroline=False)
     fig.update_yaxes(gridcolor=GRID, linecolor=AXIS, zeroline=False)
     return fig
@@ -281,7 +288,7 @@ def explorer_figure():
                             method='update', args=[{'visible': visible}, {'title.text': explorer_title(d)}]))
     # Title (two lines) at the very top, the dropdown menu just above the chart
     fig.update_layout(updatemenus=[dict(buttons=buttons, active=int(start), x=0, xanchor='left', y=1.04, yanchor='bottom',
-                                        bgcolor='white', bordercolor=AXIS)],
+                                        bgcolor=MENU_BG, bordercolor=AXIS, font=dict(color=INK))],
                       title=dict(text=explorer_title(comparison.loc[start]), x=0.01, xanchor='left',
                                  y=0.98, yanchor='top', font=dict(size=14)))
     fig.update_xaxes(title_text='Mass (m/z)', range=[10, 160])
@@ -307,7 +314,7 @@ def areas_figure():
         run = runs[4]
         around = run[(run['mass'] == mass) & run['rt'].between(p['team_time_s'] - 40, p['team_time_s'] + 80)]
         fig.add_trace(go.Scatter(x=used['rt'].round(1), y=(used['cps'] / 1e6).round(4), fill='tozeroy', mode='none',
-                                 fillcolor='rgba(42,120,214,0.18)' if mass == 78 else 'rgba(235,104,52,0.18)',
+                                 fillcolor='rgba(57,135,229,0.25)' if mass == 78 else 'rgba(217,89,38,0.25)',
                                  name='area we add up', showlegend=(col == 1), hoverinfo='skip'), row=1, col=col)
         fig.add_trace(go.Scatter(x=around['rt'].round(1), y=(around['cps'] / 1e6).round(4), mode='lines+markers',
                                  line=dict(color=COLORS[mass], width=1.8), marker=dict(size=8), name=NAMES[mass],
@@ -329,7 +336,7 @@ def areas_figure():
 # 2b. Bonus section: the substance that comes out with toluene
 #     (the same analysis as section 9 of the notebook)
 # ---------------------------------------------------------------------------
-MYSTERY_COLORS = {91: '#eb6834', 58: '#6250d6', 69: '#008300', 127: '#e87ba4'}
+MYSTERY_COLORS = {91: '#d95926', 58: '#9085e9', 69: '#008300', 127: '#d55181'}
 MYSTERY_NAMES = {91: 'm/z 91 (toluene)', 58: 'm/z 58', 69: 'm/z 69', 127: 'm/z 127'}
 MYSTERY_WINDOW = (912, 935)   # tube 4 seconds: after toluene, and after the overload has passed
 highest_reading = ms['cps'].max()
@@ -412,7 +419,7 @@ def mystery_mirror_figure():
 
 
 def lineup_figure():
-    colors = [MYSTERY_COLORS[58] if name == best else AXIS for name in lineup.index]
+    colors = [MYSTERY_COLORS[58] if name == best else MUTED_BAR for name in lineup.index]
     fig = go.Figure(go.Bar(x=lineup.values.round(3), y=lineup.index, orientation='h', marker_color=colors,
                            text=[f'{v:.2f}' for v in lineup.values], textposition='outside', width=0.6,
                            hovertemplate='%{y}<br>similarity %{x:.3f}<extra></extra>'))
@@ -451,7 +458,6 @@ def top_pieces(spectrum, n=5):
 
 oven_peak = ms.loc[ms['oven_T'].idxmax()]
 heating = ms[ms['minutes'] <= oven_peak['minutes']]
-gc_min = {column: (start - t0) / 60 for column, start in gc_start.items()}
 comparison['within'] = comparison['difference'].abs() <= comparison['column'].map(scan_time)
 by_peak = comparison.set_index('peak')
 
@@ -466,44 +472,6 @@ race_end = max(r['t'] for r in runners) + 30
 lab_data = {'oven_min': round(float(heating['oven_T'].min())), 'oven_max': round(float(oven_peak['oven_T'])),
             'runners': runners, 'race_end': race_end, 'benzene_pieces': top_pieces(by_peak.loc[13, 'spectrum'])}
 
-
-# Time machine: what was happening in each minute of the experiment
-def stage_at(minute):   # minute = a whole minute; a stage counts if it starts during that minute
-    if minute <= oven_peak['minutes']:
-        return 'Oven heats the rock'
-    if gc_min[1] < minute + 1 and minute < gc_min[1] + RUN_LENGTH[1] / 60:
-        return 'Sorting run 1 (tube 1)'
-    if gc_min[4] < minute + 1:
-        return 'Sorting run 2 (tube 4)'
-    return 'Between stages'
-
-
-moments = {int(oven_peak['minutes']): f"The oven reaches its hottest: {oven_peak['oven_T']:.0f} °C.",
-           int(gc_min[1]): 'Gas is pushed into tube 1: sorting run 1 starts.',
-           int(gc_min[4]): 'Gas is pushed into tube 4: sorting run 2 starts.'}
-for _, p in team[(team['team_name'] != '') & ~team['event']].iterrows():
-    moments[int(gc_min[p['gc_column']] + p['team_time_s'] / 60)] = (
-        f"{p['team_name'].title()} (NASA’s bump {p['peak']}) comes out of tube {p['gc_column']}.")
-minutes_groups = dict(tuple(ms.groupby(ms['minutes'].astype(int))))
-
-
-def biggest(rows, mass):
-    values = rows.loc[rows['mass'] == mass, 'cps']
-    return None if values.empty else int(round(values.max()))
-
-
-timeline = []
-for minute in range(int(ms['minutes'].max()) + 1):
-    rows = minutes_groups.get(minute)
-    has_data = rows is not None and not rows.empty
-    timeline.append({'stage': stage_at(minute),
-                     'oven': int(round(rows['oven_T'].mean())) if has_data and minute <= oven_peak['minutes'] else None,
-                     'b': biggest(rows, 78) if has_data else None,
-                     't': biggest(rows, 91) if has_data else None,
-                     'note': moments.get(minute)})
-jumps = [('Oven at its hottest', int(oven_peak['minutes'])), ('Sorting run 1 starts', int(gc_min[1])),
-         ('Benzene comes out', int(gc_min[4] + by_peak.loc[13, 'team_time'] / 60)),
-         ('Toluene comes out', int(gc_min[4] + by_peak.loc[14, 'team_time'] / 60))]
 
 # Finish-line replay: every entry on NASA's list, in time order, for each tube
 race = {}
@@ -526,13 +494,6 @@ game = {'bumps': {str(p): {'name': by_peak.loc[p, 'name'], 'pieces': top_pieces(
                            'scores': {'benzene': float(by_peak.loc[p, 'benzene']), 'toluene': float(by_peak.loc[p, 'toluene'])}}
                   for p in (13, 14, 21)},
         'refs': {m: top_pieces(REFERENCE[m]) for m in ('benzene', 'toluene')}}
-
-# Add it up: the real readings under the benzene and toluene bumps
-add_up = {}
-for peak, molecule, mass in [(13, 'benzene', 78), (14, 'toluene', 91)]:
-    area, used = peak_area(4, mass, by_peak.loc[peak, 'team_time'])
-    add_up[molecule] = {'readings': [[round(float(t), 2), int(round(c))] for t, c in zip(used['rt'], used['cps'])],
-                        'nasa': float(team.set_index('peak').loc[peak, 'team_area'])}
 
 # Bump cards
 cards = [{'peak': int(d['peak']), 'tube': int(d['column']), 'name': d['name'], 'team': float(d['team_time']),
@@ -567,8 +528,7 @@ case = {'heaviest': heaviest, 'carbons': carbons, 'best': best, 'best_score': fl
                   f'The echo at 128 is {echo1:.1%} of 127: about {carbons} carbon atoms.',
                   f'Fingerprint lineup: {best} scores {lineup[best]:.3f}; the next best scores {lineup[runner_up]:.2f}.']}
 
-try_data = {'lab': lab_data, 'timeline': timeline, 'race': race, 'game': game, 'add_up': add_up,
-            'cards': cards, 'case': case}
+try_data = {'lab': lab_data, 'race': race, 'game': game, 'cards': cards, 'case': case}
 
 
 def try_box(box_id, title, intro, body):
@@ -598,21 +558,6 @@ try_lab = try_box('try-lab', 'Run the rover’s lab', 'Step through the three st
   <p class="small">Together, these piece weights are benzene’s fingerprint.</p>
 </div>''')
 
-jump_buttons = ''.join(f'<button data-jump="{minute}">{label}</button>' for label, minute in jumps)
-try_overview = try_box('try-time', 'Time machine',
-    'Drag the slider to travel through the four-hour experiment. The numbers are the real readings for each minute (the biggest one in that minute).', f'''
-<label for="tm-slider">Minute of the experiment</label>
-<input type="range" id="tm-slider" min="0" max="{len(timeline) - 1}" step="1" value="0">
-<div class="row"><span>Jump to:</span>{jump_buttons}</div>
-<div class="panel tm-grid">
-  <div><span class="small">Time</span><b id="tm-minute"></b></div>
-  <div><span class="small">Stage</span><b id="tm-stage"></b></div>
-  <div><span class="small">Oven</span><b id="tm-oven"></b></div>
-  <div><span class="small">Weight 78 (benzene)</span><b id="tm-78"></b></div>
-  <div><span class="small">Weight 91 (toluene)</span><b id="tm-91"></b></div>
-</div>
-<p id="tm-note" aria-live="polite"></p>''')
-
 try_race = try_box('try-replay', 'Finish-line replay',
     'Replay a sorting run. As the clock passes each bump on NASA’s list, a card shows when NASA saw it and when the raw data shows it.', '''
 <div class="row" role="group" aria-label="Sorting run"><span>Run:</span><button data-tube="1">Tube 1</button><button data-tube="4" class="on">Tube 4</button></div>
@@ -629,13 +574,6 @@ try_fingerprint = try_box('try-finger', 'Match the fingerprint',
 <p>Which lab fingerprint does it match?</p>
 <div class="guess-row"><button class="card" data-guess="benzene"><b>Benzene</b><span class="refpieces"></span></button><button class="card" data-guess="toluene"><b>Toluene</b><span class="refpieces"></span></button></div>
 <p id="fg-verdict" aria-live="polite"></p>''')
-
-try_areas = try_box('try-add', 'Add it up yourself',
-    'The size of a bump is the area under it. Build it up one slice at a time: each slice is the time between two readings × their average height.', '''
-<div class="row" role="group" aria-label="Chemical"><button data-mol="benzene">Benzene (bump 13, weight 78)</button><button data-mol="toluene">Toluene (bump 14, weight 91)</button></div>
-<div class="row"><button id="au-next">Add the next slice</button><button id="au-all">Add them all</button><button id="au-reset">Start over</button><span>Running total: <b id="au-total">0</b></span></div>
-<div class="table-wrap"><table class="clues addup"><thead><tr><th>Time (s)</th><th>Reading (counts per second)</th><th>Slice added (seconds × average reading)</th></tr></thead><tbody></tbody></table></div>
-<p id="au-msg" aria-live="polite"></p>''')
 
 try_cards = try_box('try-cards', 'Bump cards', 'Filter NASA’s bumps, then tap a card to see its details.',
     '<div class="row" role="group" aria-label="Filter">'
@@ -661,56 +599,208 @@ def chart(fig):
     return fig.to_html(full_html=False, include_plotlyjs=False, config=CONFIG)
 
 
+PAGE_CSS = """
+  :root { color-scheme: dark;
+          --space: #07060d; --panel: #15121e; --glass: rgba(255,255,255,0.035); --line: rgba(255,255,255,0.09);
+          --ink: #f6f0ea; --body: #d6cfdf; --muted: #a39cb2;
+          --mars: #e8794a; --mars-soft: #f2a27a; --dust: #f3c98b; --link: #8ecbff; --ok: #5fd38d;
+          --display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+          --text: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+          --mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  html { background: var(--space); }
+  body { margin: 0; color: var(--body); font: 17px/1.65 var(--text); -webkit-font-smoothing: antialiased; }
+  /* A starfield and faint Mars and nebula glows, fixed behind the whole page */
+  body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background-image:
+      radial-gradient(1px 1px at 23px 41px, rgba(255,255,255,0.85), transparent 60%),
+      radial-gradient(1px 1px at 141px 97px, rgba(255,255,255,0.5), transparent 60%),
+      radial-gradient(1.6px 1.6px at 233px 173px, rgba(255,226,200,0.8), transparent 60%),
+      radial-gradient(1px 1px at 317px 29px, rgba(255,255,255,0.45), transparent 60%),
+      radial-gradient(1.2px 1.2px at 389px 251px, rgba(200,220,255,0.7), transparent 60%),
+      radial-gradient(1px 1px at 71px 283px, rgba(255,255,255,0.4), transparent 60%),
+      radial-gradient(1px 1px at 191px 331px, rgba(255,255,255,0.6), transparent 60%),
+      radial-gradient(1.4px 1.4px at 57px 113px, rgba(255,255,255,0.75), transparent 60%),
+      radial-gradient(1px 1px at 263px 59px, rgba(255,240,225,0.6), transparent 60%),
+      radial-gradient(1.8px 1.8px at 409px 167px, rgba(255,255,255,0.9), transparent 60%),
+      radial-gradient(1px 1px at 487px 401px, rgba(200,215,255,0.6), transparent 60%),
+      radial-gradient(1.2px 1.2px at 131px 467px, rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(1px 1px at 557px 281px, rgba(255,255,255,0.5), transparent 60%),
+      radial-gradient(1.5px 1.5px at 331px 487px, rgba(255,220,195,0.7), transparent 60%),
+      radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.15), transparent 70%),
+      radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.10), transparent 70%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.07), transparent 70%);
+    background-size: 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px,
+                     610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px,
+                     100% 100%, 100% 100%, 100% 100%;
+    background-repeat: repeat, repeat, repeat, repeat, repeat, repeat, repeat,
+                       repeat, repeat, repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat, no-repeat; }
+
+  /* The hero: title, a glowing Mars, its orbit and a benzene molecule */
+  .hero { position: relative; overflow: hidden; padding: 104px 16px 88px; border-bottom: 1px solid var(--line);
+          background: radial-gradient(ellipse 70% 90% at 85% 35%, rgba(232,121,74,0.20), transparent 60%),
+                      linear-gradient(180deg, rgba(14,11,24,0.7), rgba(7,6,13,0)); }
+  .hero .wrap { position: relative; z-index: 2; }
+  .planet { position: absolute; z-index: 1; width: 440px; height: 440px; right: max(0px, calc(50% - 640px)); top: 48px;
+            border-radius: 50%;
+            background:
+              radial-gradient(ellipse 22% 9% at 50% 7%, rgba(255,246,236,0.75), transparent 70%),
+              radial-gradient(ellipse 30% 14% at 62% 42%, rgba(95,30,10,0.55), transparent 70%),
+              radial-gradient(ellipse 22% 16% at 36% 64%, rgba(100,32,12,0.5), transparent 70%),
+              radial-gradient(circle at 72% 70%, rgba(80,24,10,0.45) 0 5%, transparent 12%),
+              radial-gradient(circle at 28% 40%, rgba(255,200,160,0.25) 0 4%, transparent 10%),
+              radial-gradient(circle at 32% 30%, #f3a772 0%, #d0592b 34%, #93331a 66%, #3b1207 100%);
+            box-shadow: inset -50px -40px 90px rgba(8,3,2,0.9), inset 10px 8px 30px rgba(255,190,150,0.15),
+                        0 0 70px rgba(232,121,74,0.35), 0 0 180px rgba(232,121,74,0.18); }
+  .orbit { position: absolute; z-index: 1; width: 640px; height: 190px; right: max(-100px, calc(50% - 740px)); top: 178px;
+           border: 1px solid rgba(255,255,255,0.14); border-radius: 50%; transform: rotate(-16deg); }
+  .orbit::after { content: ''; position: absolute; width: 9px; height: 9px; border-radius: 50%; background: #f6f0ea;
+                  box-shadow: 0 0 12px rgba(255,255,255,0.8); top: 14px; left: 130px; }
+  .molecule { position: absolute; z-index: 1; width: 200px; height: 200px; right: max(250px, calc(50% - 390px)); top: 330px;
+              filter: drop-shadow(0 0 10px rgba(243,201,139,0.35)); animation: spin 160s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .wrap, main { max-width: 1040px; margin: 0 auto; }
+  main { padding: 8px 16px 72px; }
+  .eyebrow { font: 600 13px/1.4 var(--mono); letter-spacing: 3px; text-transform: uppercase; color: var(--mars-soft); margin: 0 0 14px; }
+  h1 { font: 700 clamp(46px, 8.5vw, 92px)/0.98 var(--display); letter-spacing: -0.03em; color: var(--ink); margin: 0 0 22px; max-width: 640px; }
+  h1 .mars { background: linear-gradient(100deg, #f3c98b 0%, #e8794a 45%, #c4471f 100%);
+             -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p.sub { font-size: 20px; line-height: 1.55; color: #e7e0ee; margin: 0 0 22px; max-width: 600px;
+                text-shadow: 0 1px 14px rgba(7,6,13,0.9); }
+  .readout { font: 500 12.5px/1.5 var(--mono); letter-spacing: 2.5px; color: var(--muted); margin: 0 0 16px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; max-width: 600px; }
+  .stats span { font: 13px/1.3 var(--mono); color: var(--body); padding: 7px 12px; border: 1px solid var(--line);
+                border-radius: 999px; background: rgba(10,8,18,0.65); }
+  .stats b { color: var(--dust); font-weight: 600; }
+
+  /* Section headings: a small benzene-ring icon, and a badge for the graph number */
+  h2 { font: 600 30px/1.2 var(--display); letter-spacing: -0.01em; color: var(--ink); margin: 72px 0 10px;
+       padding-top: 32px; border-top: 1px solid var(--line); }
+  h2::before { content: ''; display: inline-block; width: 26px; height: 26px; margin-right: 12px; vertical-align: -4px;
+               background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e8794a' stroke-width='1.7'%3E%3Cpath d='M12 2.5L20.23 7.25V16.75L12 21.5L3.77 16.75V7.25Z'/%3E%3Ccircle cx='12' cy='12' r='4.3'/%3E%3C/svg%3E") center / contain no-repeat; }
+  h2 .num { font: 600 13px/1 var(--mono); letter-spacing: 1.5px; text-transform: uppercase; color: var(--mars-soft);
+            background: rgba(232,121,74,0.12); border: 1px solid rgba(232,121,74,0.35); padding: 6px 10px;
+            border-radius: 999px; vertical-align: 5px; }
+  h3 { font: 600 19px/1.3 var(--display); color: var(--ink); margin: 26px 0 6px; }
+  p { margin: 0 0 14px; max-width: 760px; }
+  b, strong { color: var(--ink); }
+  i { color: var(--dust); }
+  a { color: var(--link); text-underline-offset: 3px; }
+  code { font: 14px var(--mono); color: var(--dust); background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 6px; }
+  ::selection { background: rgba(232,121,74,0.35); color: #fff; }
+
+  /* Panels: tips, lab steps, charts, results, big numbers and tables */
+  .tip { background: var(--glass); border: 1px solid var(--line); border-left: 3px solid var(--mars); border-radius: 12px;
+         padding: 16px 20px; margin: 36px 0 0; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 18px 0; }
+  .step { background: linear-gradient(160deg, rgba(232,121,74,0.12), rgba(21,18,30,0.92) 55%); border: 1px solid var(--line);
+          border-radius: 16px; padding: 18px 20px; }
+  .step b { font: 700 22px/1.3 var(--display); color: var(--mars-soft); }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 10px; margin: 18px 0;
+           overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04); }
+  .result { border-left: 3px solid var(--mars); background: linear-gradient(90deg, rgba(232,121,74,0.11), rgba(232,121,74,0.02));
+            border-radius: 0 14px 14px 0; padding: 14px 18px; margin: 18px 0; }
+  .big { display: flex; flex-wrap: wrap; gap: 16px; margin: 18px 0; }
+  .big div { flex: 1 1 220px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; }
+  .big strong { display: block; font: 700 48px/1.05 var(--display); margin-bottom: 4px;
+                background: linear-gradient(100deg, #f3c98b, #e8794a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 9px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table:not(.clues) td { font: 14px/1.4 var(--mono); }
+  th:nth-child(3), td:nth-child(3), th:nth-child(7), td:nth-child(7) { text-align: left; }
+  th { font: 600 13px/1.3 var(--text); color: var(--ink); background: #1b1726; position: sticky; top: 0; }
+  tr.named td { color: var(--dust); font-weight: 600; }
+  tr:hover td { background: rgba(255,255,255,0.025); }
+  table.clues th, table.clues td { text-align: left; white-space: normal; vertical-align: top; }
+  table.clues td:first-child { white-space: nowrap; }
+  ul { max-width: 760px; padding-left: 22px; }
+  li { margin-bottom: 8px; overflow-wrap: anywhere; }   /* long links and file names wrap on phones */
+  li::marker { color: var(--mars); }
+  footer { font: 13px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); margin-top: 64px; padding-top: 18px; }
+
+  /* Smaller screens: shrink Mars behind the text, hide the orbit and molecule */
+  @media (max-width: 1100px) {
+    .planet { width: 340px; height: 340px; right: -90px; top: 40px; opacity: 0.6; }
+    .orbit, .molecule { display: none; }
+  }
+  @media (max-width: 700px) {
+    .hero { padding: 72px 16px 56px; }
+    .planet { width: 240px; height: 240px; right: -90px; top: 16px; opacity: 0.45; }
+    h2 { font-size: 25px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .molecule { animation: none; } }
+"""
+
 TRY_CSS = """
-  /* "Try it yourself" boxes */
-  .try { background: var(--sand); border-radius: 14px; padding: 18px 20px; margin: 28px 0 8px; }
+  /* "Try it yourself" boxes: a glowing mission-console look */
+  .try { position: relative; border: 1px solid rgba(232,121,74,0.30); border-radius: 20px; padding: 20px 22px; margin: 30px 0 10px;
+         background: linear-gradient(150deg, rgba(232,121,74,0.11), rgba(110,90,210,0.07) 55%, rgba(21,18,30,0.92));
+         box-shadow: 0 20px 50px rgba(0,0,0,0.35); }
   .try [hidden] { display: none !important; }
-  .try .label { font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--accent); margin: 0 0 2px; }
-  .try h3 { margin: 0 0 6px; }
-  .try button { font: inherit; font-size: 15px; line-height: 1.3; padding: 7px 14px; min-height: 36px; border-radius: 999px;
-                border: 1px solid #cfc6b8; background: var(--card); color: var(--ink); cursor: pointer; }
-  .try button:hover { border-color: var(--accent); }
-  .try button:focus-visible { outline: 2px solid #1c5cab; outline-offset: 2px; }
-  .try button.on { background: var(--ink); border-color: var(--ink); color: #f4efe9; }
-  .try .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
-  .try .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin: 10px 0; max-width: none; }
-  .try .small, .try label { font-size: 14px; color: var(--muted); }
-  .try input[type=range] { width: 100%; accent-color: var(--accent); }
-  .try .chip { display: inline-block; padding: 3px 10px; margin: 6px 6px 0 0; border-radius: 999px; background: var(--page);
-               border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-  .try .ok { color: #006300; font-weight: 600; }
-  .try .no { color: var(--accent); font-weight: 600; }
-  .try .big-number { font-size: 32px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .try .meter { height: 12px; background: var(--page); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
-  .try .meter div { height: 100%; width: 0; background: var(--accent); }
-  .try .lane { display: grid; grid-template-columns: minmax(110px, 170px) 1fr; gap: 10px; align-items: center; margin: 6px 0; font-size: 14px; }
-  .try .lane-track { position: relative; height: 26px; background: var(--page); border: 1px solid var(--line); border-radius: 999px; }
-  .try .lane-track::after { content: ''; position: absolute; right: 22px; top: 2px; bottom: 2px; border-right: 2px solid var(--ink); }
-  .try .runner { position: absolute; left: 0; top: 1px; width: 22px; text-align: center; font-size: 18px; line-height: 22px; color: var(--accent); }
-  .try .tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-  .try .tm-grid b { display: block; color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .try .label { font: 600 12px/1.4 var(--mono); letter-spacing: 2.5px; text-transform: uppercase; color: var(--dust); margin: 0 0 4px; }
+  .try .label::before { content: '◆  '; color: var(--mars); }
+  .try h3 { margin: 0 0 6px; font-size: 22px; }
+  .try button { font: 500 15px/1.3 var(--text); padding: 8px 15px; min-height: 38px; border-radius: 999px; cursor: pointer;
+                border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.05); color: var(--ink);
+                transition: border-color .15s, box-shadow .15s, background .15s; }
+  .try button:hover { border-color: var(--mars); box-shadow: 0 0 0 3px rgba(232,121,74,0.15); }
+  .try button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  .try button.on { background: var(--mars); border-color: var(--mars); color: #1b0d06; font-weight: 600; }
+  .try .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .try .panel { background: rgba(8,7,14,0.6); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0; max-width: none; }
+  .try .small { font-size: 14px; color: var(--muted); }
+  .try .chip { display: inline-block; padding: 4px 11px; margin: 6px 6px 0 0; border-radius: 999px; font: 13.5px/1.4 var(--mono);
+               color: var(--ink); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); }
+  .try .ok { color: var(--ok); font-weight: 600; }
+  .try .no { color: var(--mars-soft); font-weight: 600; }
+  .try .big-number { font: 700 36px/1.1 var(--display); color: var(--mars); text-shadow: 0 0 24px rgba(232,121,74,0.55); font-variant-numeric: tabular-nums; }
+  .try .meter { height: 12px; background: rgba(255,255,255,0.06); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .try .meter div { height: 100%; width: 0; background: linear-gradient(90deg, #3987e5, #e8794a 65%, #ffd27a); box-shadow: 0 0 14px rgba(232,121,74,0.6); }
+  .try .lane { display: grid; grid-template-columns: minmax(110px, 170px) 1fr; gap: 10px; align-items: center; margin: 8px 0; font-size: 14px; }
+  .try .lane-track { position: relative; height: 26px; border: 1px solid rgba(255,255,255,0.12); border-radius: 999px;
+                     background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.08)); }
+  .try .lane-track::after { content: ''; position: absolute; right: 22px; top: 3px; bottom: 3px; border-right: 2px solid var(--dust); }
+  .try .runner { position: absolute; left: 0; top: 1px; width: 22px; text-align: center; font-size: 18px; line-height: 22px;
+                 color: var(--mars); text-shadow: 0 0 10px rgba(232,121,74,0.9); }
   .try .feed { list-style: none; padding: 0; max-height: 340px; overflow-y: auto; }
-  .try .feed li { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 6px 0; }
-  .try .cards, .try .guess-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
-  .try .card { display: block; text-align: left; border-radius: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line);
-               overflow-wrap: anywhere; }
+  .try .feed li { background: rgba(8,7,14,0.6); border: 1px solid var(--line); border-radius: 12px; padding: 9px 13px; margin: 6px 0; }
+  .try .cards, .try .guess-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 12px 0; }
+  .try .card { display: block; text-align: left; border-radius: 14px; padding: 11px 13px; background: rgba(8,7,14,0.6);
+               border: 1px solid var(--line); color: var(--body); overflow-wrap: anywhere; }
+  .try button.card.on { background: rgba(232,121,74,0.12); color: var(--ink); border: 2px solid var(--mars); font-weight: 500; }
   #try-case .cards { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
-  .try button.card.on { background: var(--card); color: var(--ink); border: 2px solid var(--ink); }
   .try .refpieces { display: block; }
-  .try .suspect.out { opacity: 0.55; }
+  .try .suspect { transition: opacity .3s; }
+  .try .suspect.out { opacity: 0.42; }
   .try .suspect.out b { text-decoration: line-through; }
   .try .suspect .why { font-size: 13px; margin-top: 4px; }
-  .try .suspect.winner { border: 2px solid #006300; }
-  .try table.addup tr.added td { background: #fbf3ea; }
+  .try .suspect.winner { border: 2px solid var(--ok); box-shadow: 0 0 28px rgba(95,211,141,0.25); }
   @media (prefers-reduced-motion: reduce) { .try * { transition: none !important; animation: none !important; } }
 """
+
+def molecule_svg():
+    # A benzene molecule for the hero: six carbon atoms in a ring (with the aromatic circle), each holding a hydrogen
+    centre, ring, outer = 150, 62, 112
+    angles = [math.radians(a) for a in range(-90, 270, 60)]
+    carbons = [(centre + ring * math.cos(a), centre + ring * math.sin(a)) for a in angles]
+    hydrogens = [(centre + outer * math.cos(a), centre + outer * math.sin(a)) for a in angles]
+    ring_path = 'M' + ' L'.join(f'{x:.1f} {y:.1f}' for x, y in carbons) + ' Z'
+    bonds = ''.join(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}"/>'
+                    for (x1, y1), (x2, y2) in zip(carbons, hydrogens))
+    carbon_atoms = ''.join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="9"/>' for x, y in carbons)
+    hydrogen_atoms = ''.join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6"/>' for x, y in hydrogens)
+    return (f'<svg class="molecule" viewBox="0 0 300 300" aria-hidden="true" focusable="false">'
+            f'<g fill="none" stroke="#f3c98b" stroke-width="2.2" stroke-opacity="0.85"><path d="{ring_path}"/>'
+            f'<circle cx="{centre}" cy="{centre}" r="36"/>{bonds}</g>'
+            f'<g fill="#e8794a">{carbon_atoms}</g><g fill="#f6f0ea">{hydrogen_atoms}</g></svg>')
+
 
 TRY_JS = r"""
 (function () {
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const num = (n, digits = 0) => n == null ? '—' :
     Number(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  const millions = n => (n / 1e6).toFixed(1) + ' million';
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -768,25 +858,6 @@ TRY_JS = r"""
       L.benzene_pieces.forEach(([mass, pct], i) =>
         setTimeout(() => box.append(el('span', 'chip', `piece ${mass}: ${pct}%`)), reduceMotion ? 0 : i * 250));
     });
-  }
-
-  // ---- Time machine: one minute of the experiment at a time ----
-  const tm = document.getElementById('try-time');
-  if (tm) {
-    const slider = tm.querySelector('#tm-slider');
-    const show = minute => {
-      const d = TRY.timeline[minute];
-      slider.value = minute;
-      tm.querySelector('#tm-minute').textContent = `Minute ${minute}`;
-      tm.querySelector('#tm-stage').textContent = d.stage;
-      tm.querySelector('#tm-oven').textContent = d.oven == null ? '—' : num(d.oven) + ' °C';
-      tm.querySelector('#tm-78').textContent = d.b == null ? 'no reading' : num(d.b) + ' counts/s';
-      tm.querySelector('#tm-91').textContent = d.t == null ? 'no reading' : num(d.t) + ' counts/s';
-      tm.querySelector('#tm-note').textContent = d.note || (d.b == null && d.t == null ? 'The file has no measurements in this minute.' : '');
-    };
-    slider.addEventListener('input', () => show(+slider.value));
-    tm.querySelectorAll('[data-jump]').forEach(b => b.addEventListener('click', () => show(+b.dataset.jump)));
-    show(0);
   }
 
   // ---- Finish-line replay of a sorting run ----
@@ -870,46 +941,6 @@ TRY_JS = r"""
     }));
     bumpBtns.forEach(x => x.addEventListener('click', () => showBump(x.dataset.bump)));
     showBump('13');
-  }
-
-  // ---- Add it up yourself: the area under a bump, one slice at a time ----
-  const au = document.getElementById('try-add');
-  if (au) {
-    const A = TRY.add_up;
-    let mol = 'benzene', next = 1, total = 0;
-    const body = au.querySelector('tbody'), totalOut = au.querySelector('#au-total'), msg = au.querySelector('#au-msg');
-    const molBtns = [...au.querySelectorAll('[data-mol]')];
-    function load(m) {
-      mol = m; next = 1; total = 0;
-      body.innerHTML = ''; msg.textContent = ''; totalOut.textContent = '0';
-      pick(molBtns, molBtns.find(x => x.dataset.mol === m));
-      A[m].readings.forEach(([t, c], i) => {
-        const tr = el('tr');
-        tr.append(el('td', null, num(t, 1)), el('td', null, num(c)), el('td', null, i === 0 ? 'first reading' : ''));
-        body.append(tr);
-      });
-    }
-    function addSlice() {
-      const r = A[mol].readings;
-      if (next >= r.length) return;
-      const [t1, c1] = r[next - 1], [t2, c2] = r[next];
-      const slice = (t2 - t1) * (c1 + c2) / 2;
-      total += slice;
-      body.rows[next].cells[2].textContent = `${num(t2 - t1, 1)} s × ${num((c1 + c2) / 2)} = ${num(slice)}`;
-      body.rows[next].classList.add('added');
-      next++;
-      totalOut.textContent = millions(total);
-      if (next >= r.length) {
-        msg.innerHTML = '';
-        msg.append(el('b', null, `Done! Your total: ${millions(total)} counts. NASA’s: ${millions(A[mol].nasa)}. ` +
-                                 `That’s ${(100 * total / A[mol].nasa).toFixed(0)}% of NASA’s number.`));
-      }
-    }
-    au.querySelector('#au-next').addEventListener('click', addSlice);
-    au.querySelector('#au-all').addEventListener('click', () => { while (next < A[mol].readings.length) addSlice(); });
-    au.querySelector('#au-reset').addEventListener('click', () => load(mol));
-    molBtns.forEach(x => x.addEventListener('click', () => load(x.dataset.mol)));
-    load('benzene');
   }
 
   // ---- Bump cards with filters ----
@@ -1065,53 +1096,28 @@ page = f"""<!doctype html>
 <title>Benzene on Mars</title>
 <meta name="description" content="Checking NASA's chemistry results with the Curiosity rover's raw data: interactive graphs with plain-language explanations.">
 <script src="https://cdn.plot.ly/plotly-{get_plotlyjs_version()}.min.js" charset="utf-8"></script>
+<meta name="theme-color" content="#07060d">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
-  :root {{ color-scheme: light; --ink: #1e1b24; --body: #4a4550; --muted: #6b6570; --accent: #b5410f;
-          --page: #fbfaf7; --card: #ffffff; --sand: #f1ece4; --line: #e2dbd0; }}
-  * {{ box-sizing: border-box; }}
-  body {{ margin: 0; background: var(--page); color: var(--body);
-         font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }}
-  header {{ background: #1e1b24; color: #f4efe9; padding: 56px 16px 48px; }}
-  header .wrap, main {{ max-width: 1040px; margin: 0 auto; }}
-  main {{ padding: 8px 16px 64px; }}
-  .eyebrow {{ font-size: 13px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: #e8794a; margin: 0 0 8px; }}
-  h1 {{ font-size: clamp(40px, 7vw, 72px); line-height: 1.05; margin: 0 0 16px; letter-spacing: -1px; }}
-  header p.sub {{ font-size: 20px; color: #cfc8d6; margin: 0; max-width: 720px; }}
-  h2 {{ color: var(--ink); font-size: 28px; line-height: 1.2; margin: 56px 0 8px; }}
-  h2 .num {{ color: var(--accent); }}
-  h3 {{ color: var(--ink); font-size: 18px; margin: 20px 0 4px; }}
-  p {{ margin: 0 0 12px; max-width: 760px; }}
-  .tip {{ background: var(--sand); border-radius: 12px; padding: 16px 20px; margin: 32px 0 0; }}
-  .tip b {{ color: var(--ink); }}
-  .steps {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 16px 0; }}
-  .step {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }}
-  .step b {{ color: var(--accent); font-size: 22px; }}
-  .chart {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 8px; margin: 16px 0; overflow: hidden; }}
-  .result {{ border-left: 4px solid var(--accent); padding: 4px 0 4px 16px; margin: 16px 0; }}
-  .big {{ display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }}
-  .big div {{ flex: 1 1 200px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }}
-  .big strong {{ display: block; color: var(--accent); font-size: 36px; line-height: 1.1; }}
-  .table-wrap {{ overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }}
-  th, td {{ padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }}
-  th:nth-child(3), td:nth-child(3), th:nth-child(7), td:nth-child(7) {{ text-align: left; }}
-  th {{ color: var(--ink); background: var(--sand); position: sticky; top: 0; }}
-  tr.named td {{ color: var(--ink); font-weight: 600; }}
-  ul {{ max-width: 760px; padding-left: 22px; }}
-  li {{ margin-bottom: 6px; overflow-wrap: anywhere; }}   /* long links and file names wrap on phones */
-  a {{ color: #1c5cab; }}
-  footer {{ color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); margin-top: 56px; padding-top: 16px; }}
-  table.clues th, table.clues td {{ text-align: left; white-space: normal; vertical-align: top; }}
-  table.clues td:first-child {{ white-space: nowrap; }}
+{PAGE_CSS}
 {TRY_CSS}
 </style>
 </head>
 <body>
-<header><div class="wrap">
-  <p class="eyebrow">CS85 · Project 11{byline}</p>
-  <h1>Benzene on Mars</h1>
-  <p class="sub">Checking NASA’s chemistry results with the Curiosity rover’s raw data. Every graph on this page is interactive.</p>
-</div></header>
+<header class="hero">
+  <div class="planet" aria-hidden="true"></div>
+  <div class="orbit" aria-hidden="true"></div>
+  {molecule_svg()}
+  <div class="wrap">
+    <p class="eyebrow">CS85 · Project 11{byline}</p>
+    <h1>Benzene on <span class="mars">Mars</span></h1>
+    <p class="sub">Checking NASA’s chemistry results with the Curiosity rover’s raw data. Every graph on this page is interactive.</p>
+    <p class="readout">SOL {SOL} · EXPERIMENT {EID} · SAM GC-MS · GALE CRATER</p>
+    <div class="stats"><span><b>{len(ms):,}</b> raw readings</span><span><b>{len(comparison)}</b> bumps checked</span><span><b>{benzene_score:.2f}</b> benzene match</span><span><b>1</b> mystery solved</span></div>
+  </div>
+</header>
 <main>
 
 <div class="tip"><b>How to use the graphs:</b> hover over a line or bar to see its numbers · drag across a graph to zoom in ·
@@ -1147,8 +1153,6 @@ the three stages: baking, then two sorting runs through two different tubes. Gap
 <p>This is the map of the experiment. The tall, thin spikes on the right are single chemicals coming out of the second tube,
 and that’s where NASA’s team found benzene and toluene. Try dragging across the spikes to zoom in.</p>
 
-{try_overview}
-
 <h2><span class="num">Graph 2</span> · The sorting runs (chromatograms)</h2>
 <h3>What you’re looking at</h3>
 <p>A zoom into each sorting run, rebuilt from the raw numbers. Left to right is the number of seconds since the gas entered
@@ -1167,6 +1171,8 @@ one measurement (the instrument measures each weight only every {scan_time[4]:.1
 are wide or overlapping bumps that are hard to pin down. The full list is in the table further down.</div>
 
 {try_race}
+
+{try_cards}
 
 <h2><span class="num">Graph 3</span> · Chemical fingerprints</h2>
 <h3>What you’re looking at</h3>
@@ -1201,8 +1207,6 @@ how much of that chemical there was, and NASA’s team measures it the same way.
 <p>Starting from the raw numbers, we get the same amounts NASA reported. These areas measure the size of the signal, not
 grams: turning them into an actual amount needs the instrument’s calibration.</p>
 
-{try_areas}
-
 <h2>Every bump, NASA vs. the raw data</h2>
 <p>Times are seconds after the gas entered the tube. “Strongest masses” are the weights that rise most at that moment
 (45 and up). The two bumps NASA named are in bold.</p>
@@ -1210,8 +1214,6 @@ grams: turning them into an actual amount needs the instrument’s calibration.<
 <tr><th>Bump</th><th>Tube</th><th>NASA’s name</th><th>NASA’s time</th><th>Our time</th><th>Difference</th><th>Strongest masses</th><th>Benzene score</th><th>Toluene score</th></tr>
 {table_rows}
 </table></div>
-
-{try_cards}
 
 {mystery_section}
 
