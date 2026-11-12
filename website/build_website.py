@@ -325,6 +325,118 @@ def areas_figure():
 
 
 # ---------------------------------------------------------------------------
+# 2b. Bonus section: the substance that comes out with toluene
+#     (the same analysis as section 9 of the notebook)
+# ---------------------------------------------------------------------------
+MYSTERY_COLORS = {91: '#eb6834', 58: '#6250d6', 69: '#008300', 127: '#e87ba4'}
+MYSTERY_NAMES = {91: 'm/z 91 (toluene)', 58: 'm/z 58', 69: 'm/z 69', 127: 'm/z 127'}
+MYSTERY_WINDOW = (912, 935)   # tube 4 seconds: after toluene, and after the overload has passed
+highest_reading = ms['cps'].max()
+
+# The mystery fingerprint, from the tail of the peak
+run4 = runs[4]
+in_window = run4[run4['rt'].between(*MYSTERY_WINDOW)].groupby('mass')['cps'].mean()
+background = run4[run4['rt'].between(850, 896)].groupby('mass')['cps'].median()
+mystery = (in_window - background.reindex(in_window.index).fillna(0)).clip(lower=0)
+mystery_pct = 100 * mystery / mystery[mystery.index >= 35].max()
+heavy = mystery_pct[mystery_pct.index > 100]
+heaviest = int(heavy[heavy > 1].index.max())
+echo1, echo2 = mystery[128] / mystery[127], mystery[129] / mystery[127]
+tube1_top = runs[1][runs[1]['rt'].between(836, 852)].groupby('mass')['cps'].max()
+
+# The suspect lineup (NIST IDs come from CAS numbers)
+SUSPECTS = {
+    'N-methyl-trifluoroacetamide': 'C815065',   # reagent by-product; in the team's oven-run table
+    'trifluoroiodomethane (CF3I)': 'C2314978',  # has 127 and 69
+    'acetone': 'C67641',                        # has 58
+    'iodomethane (CH3I)': 'C74884',             # has 127 and 15
+    'benzene': 'C71432',
+    'trifluoroacetamide': 'C354381',            # reagent-like, has 69
+    'chloromethane': 'C74873',                  # in the team's oven-run table
+    'dichloromethane': 'C75092',                # in the team's oven-run table
+    'toluene': 'C108883',
+}
+lineup = pd.Series({name: similarity(mystery, nist_spectrum(nist_id)) for name, nist_id in SUSPECTS.items()}).sort_values()
+best, runner_up = lineup.index[-1], lineup.index[-2]
+
+
+def overload_figure(column):
+    # One sorting run: the key weights around the mystery chemical, with the file's highest reading as a gray line
+    start, end, masses, note_text, note_at, note_from = {
+        4: (885, 945, (91, 69, 127, 58), '58 reads<br>almost 0 here', (903, 0.05), (889, 2.7)),
+        1: (770, 930, (127, 58), '58 drops to 0 just as<br>127 reaches its top', (838, 0.05), (815, 6.1)),
+    }[column]
+    run = runs[column]
+    fig = go.Figure()
+    for mass in masses:
+        trace = run[(run['mass'] == mass) & run['rt'].between(start, end)]
+        fig.add_trace(go.Scatter(x=trace['rt'].round(1), y=(trace['cps'] / 1e6).round(4), mode='lines+markers',
+                                 name=MYSTERY_NAMES[mass], line=dict(color=MYSTERY_COLORS[mass], width=2), marker=dict(size=7),
+                                 hovertemplate='%{x:.1f} s<br>%{y:.2f} million counts/s<extra>' + MYSTERY_NAMES[mass] + '</extra>'))
+    fig.add_hline(y=highest_reading / 1e6, line_color=GRAY, line_width=1)
+    fig.add_annotation(x=start + 1, y=highest_reading / 1e6, yshift=10, xanchor='left', text='highest reading in the file',
+                       showarrow=False, font=dict(color=INK2, size=12))
+    fig.add_annotation(x=note_at[0], y=note_at[1], ax=note_from[0], ay=note_from[1], axref='x', ayref='y',
+                       text=note_text, showarrow=True, arrowhead=2, arrowcolor=INK2, font=dict(color=INK2, size=12))
+    fig.update_xaxes(title_text='Time in the tube (seconds)', range=[start - 2, end + 2])   # short title fits phones
+    fig.update_yaxes(title_text='Counts per second (millions)', range=[0, highest_reading / 1e6 + 0.8])
+    tidy(fig, 400)
+    fig.update_layout(legend=dict(y=-0.25, yanchor='top'), margin=dict(t=20, b=100))
+    return fig
+
+
+def mystery_mirror_figure():
+    shown = mystery[(mystery.index >= 10) & (mystery.index <= 135)]
+    shown = 100 * shown / shown.max()
+    reference = nist_spectrum(SUSPECTS[best])
+    reference = 100 * reference / reference.max()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=shown.index, y=shown.round(1), marker_color=MYSTERY_COLORS[58], width=0.8,
+                         name=f'Mystery chemical ({MYSTERY_WINDOW[0]}–{MYSTERY_WINDOW[1]} s)',
+                         hovertemplate='mass %{x}: %{y:.0f}% of the tallest bar<extra>mystery</extra>'))
+    fig.add_trace(go.Bar(x=reference.index, y=-reference.round(1), customdata=reference.round(1), marker_color=GRAY,
+                         width=0.8, name=f'NIST lab: {best}',
+                         hovertemplate='mass %{x}: %{customdata:.0f}% of the tallest bar<extra>NIST lab</extra>'))
+    fig.add_vrect(x0=10, x1=35, fillcolor=SHADE, line_width=0, layer='below')
+    for mass in (58, 69, 127):
+        fig.add_annotation(x=mass, y=-reference.get(mass, 0), yshift=-12, text=str(mass), showarrow=False,
+                           font=dict(size=12, color=INK2))
+    fig.update_xaxes(title_text='Mass (m/z)', range=[10, 135])
+    fig.update_yaxes(title_text='Mystery ↑   ·   lab ↓', range=[-112, 112],
+                     tickvals=[-100, -50, 0, 50, 100], ticktext=['100', '50', '0', '50', '100'])
+    tidy(fig, 420)
+    fig.update_layout(barmode='overlay', bargap=0, legend=dict(y=-0.25, yanchor='top'), margin=dict(t=30, b=110),
+                      title=dict(text=f'Mystery vs. {best}: similarity {lineup[best]:.2f}', x=0.01, font=dict(size=15)))
+    return fig
+
+
+def lineup_figure():
+    colors = [MYSTERY_COLORS[58] if name == best else AXIS for name in lineup.index]
+    fig = go.Figure(go.Bar(x=lineup.values.round(3), y=lineup.index, orientation='h', marker_color=colors,
+                           text=[f'{v:.2f}' for v in lineup.values], textposition='outside', width=0.6,
+                           hovertemplate='%{y}<br>similarity %{x:.3f}<extra></extra>'))
+    fig.update_xaxes(title_text='Similarity to the mystery fingerprint (1 = the same pattern)', range=[0, 1.15])
+    fig.update_yaxes(automargin=True, showgrid=False)
+    tidy(fig, 380)
+    fig.update_layout(showlegend=False, margin=dict(t=20, b=60))
+    return fig
+
+
+clue_rows = [
+    ('Heaviest piece', f'{heaviest}', 'The whole molecule probably weighs 127. An odd weight means it contains nitrogen (the “nitrogen rule”).'),
+    ('Echo at 128', f'{echo1:.1%} of 127', f'About {echo1 / 0.011:.0f} carbon atoms (each one adds about 1.1%).'),
+    ('Echo at 129', f'{echo2:.1%} of 127', 'No chlorine (would be ~32%), sulfur (~4%) or bromine (~97%).'),
+    ('Piece 69', f'{mystery_pct[69]:.0f}% of the biggest piece', 'The weight of a CF₃ piece (one carbon, three fluorine): a hint of fluorine.'),
+    ('Pieces 73 and 75', f'{mystery_pct[73]:.1f}% and {mystery_pct[75]:.1f}%',
+     'Almost absent, so probably not one of the reagent’s silicon chemicals (they usually make these pieces).'),
+    ('Tube 1, peak 4', f'126÷127 = {tube1_top[126] / tube1_top[127]:.2f} (mystery {mystery[126] / mystery[127]:.2f}), '
+                       f'78÷127 = {tube1_top[78] / tube1_top[127]:.2f} (mystery {mystery[78] / mystery[127]:.2f})',
+     'Same piece ratios, so NASA’s unnamed peak 4 in tube 1 looks like the same chemical.'),
+]
+clue_table = '\n'.join(f'<tr><td><b>{a}</b></td><td>{html.escape(b)}</td><td>{c}</td></tr>' for a, b, c in clue_rows)
+
+
+# ---------------------------------------------------------------------------
 # 3. The web page
 # ---------------------------------------------------------------------------
 CONFIG = {'displaylogo': False, 'responsive': True,
@@ -350,6 +462,58 @@ for _, d in comparison.iterrows():
 table_rows = '\n'.join(table_rows)
 
 byline = f' · by {html.escape(AUTHOR)}' if AUTHOR else ''
+
+mystery_section = f"""
+<h2><span class="num">Bonus</span> · Detective work: who is the mystery chemical?</h2>
+<p>In Graph 3, toluene’s bump turned out to hide a second chemical, whose biggest pieces weighed 15, 69 and 127.
+Can the data tell us what it is? Chemists narrow down an unknown chemical with a few standard clues. Here they are, one by one.</p>
+
+<h3>Clue 1: the detector got overloaded</h3>
+<p><b>What you’re looking at:</b> close-ups of a few weights as the mystery chemical comes out of the tube, in both sorting
+runs. Weights 69 and 127 shoot up together just after toluene (91) and fade together, so they come from the same chemical.
+Weight 58 is strange: it reads almost <b>zero</b> right when the chemical is strongest, then jumps up a few seconds later.
+The gray line is the highest reading anywhere in the file ({highest_reading / 1e6:.1f} million counts per second).</p>
+<h3>Tube 4, around peak 14 (toluene)</h3>
+<div class="chart">{chart(overload_figure(4))}</div>
+<h3>Tube 1, around peak 4</h3>
+<div class="chart">{chart(overload_figure(1))}</div>
+<p><b>What it tells us:</b> a signal that disappears exactly at its peak, in an instrument that tops out like this, looks
+like <b>detector overload</b>: the signal is too strong for the counter to keep up, so it reports far too little. That means
+weight 58 is probably the chemical’s <i>strongest</i> piece. So for its fingerprint we use the tail of the bump
+({MYSTERY_WINDOW[0]}–{MYSTERY_WINDOW[1]} seconds), where the signal is back in the range the detector can count.</p>
+
+<h3>Clue 2: what the pieces say</h3>
+<p>The biggest pieces of the clean fingerprint are
+{', '.join(f'{int(m)} ({v:.0f}%)' for m, v in mystery_pct[mystery_pct.index >= 35].nlargest(5).items())}.</p>
+<div class="table-wrap"><table class="clues">
+<tr><th>Clue</th><th>What the data shows</th><th>What it means</th></tr>
+{clue_table}
+</table></div>
+<p>A molecule that weighs 127, with about 3 carbon atoms, one nitrogen and fluorine, is a very specific description.</p>
+
+<h3>Clue 3: the suspect lineup</h3>
+<p><b>What you’re looking at:</b> the mystery fingerprint (top) mirrored against the best-matching lab fingerprint (bottom),
+then the similarity score of every suspect. The suspects are the chemicals the NASA team lists for this experiment, plus
+chemicals that could explain weights 58 or 127.</p>
+<div class="chart">{chart(mystery_mirror_figure())}</div>
+<div class="chart">{chart(lineup_figure())}</div>
+<div class="result"><b>The verdict:</b> the mystery chemical is almost certainly <b>{best}</b>
+(similarity {lineup[best]:.3f}; the next best, {runner_up}, scores only {lineup[runner_up]:.2f}). It is a by-product of
+MTBSTFA, a lab chemical the rover carries from Earth that had soaked into this rock sample, and the NASA team’s own
+oven-run table lists it in this experiment. So it most likely <b>came from Earth, not Mars</b>. NASA’s unnamed peak 4 in
+tube 1 looks like the same chemical.</div>
+
+<h3>How sure is this?</h3>
+<ul>
+  <li><b>The fingerprint match is very strong</b>, and the chemical fits every clue: it weighs 127 and has 3 carbon atoms,
+      one nitrogen and a CF₃ group.</li>
+  <li><b>“Detector overload” is our explanation</b> for weight 58’s strange dip. It fits the evidence, but this file alone can’t prove it.</li>
+  <li><b>Weight 15 is bigger than the lab fingerprint predicts.</b> The score ignores weights below 35, and other chemicals can make that small piece too.</li>
+  <li><b>Three silicon chemicals from the reagent couldn’t be scored</b>, because NIST has no fingerprint for them. Their usual marker pieces (73 and 75) are almost absent, though.</li>
+</ul>
+<p>Lab fingerprints for all the suspects come from the NIST Chemistry WebBook (N-methyl-trifluoroacetamide: CAS 815-06-5).
+The full working is in section 9 of the project notebook.</p>
+"""
 
 page = f"""<!doctype html>
 <html lang="en">
@@ -395,6 +559,8 @@ page = f"""<!doctype html>
   li {{ margin-bottom: 6px; overflow-wrap: anywhere; }}   /* long links and file names wrap on phones */
   a {{ color: #1c5cab; }}
   footer {{ color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); margin-top: 56px; padding-top: 16px; }}
+  table.clues th, table.clues td {{ text-align: left; white-space: normal; vertical-align: top; }}
+  table.clues td:first-child {{ white-space: nowrap; }}
 </style>
 </head>
 <body>
@@ -491,6 +657,8 @@ grams: turning them into an actual amount needs the instrument’s calibration.<
 <tr><th>Bump</th><th>Tube</th><th>NASA’s name</th><th>NASA’s time</th><th>Our time</th><th>Difference</th><th>Strongest masses</th><th>Benzene score</th><th>Toluene score</th></tr>
 {table_rows}
 </table></div>
+
+{mystery_section}
 
 <h2>What this does not show</h2>
 <ul>
