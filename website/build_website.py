@@ -16,6 +16,7 @@ import html
 import json
 import math
 import re
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -610,36 +611,11 @@ PAGE_CSS = """
   * { box-sizing: border-box; }
   html { background: var(--space); }
   body { margin: 0; color: var(--body); font: 17px/1.65 var(--text); -webkit-font-smoothing: antialiased; }
-  /* A starfield and faint Mars and nebula glows, fixed behind the whole page */
-  body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-    background-image:
-      radial-gradient(1px 1px at 23px 41px, rgba(255,255,255,0.85), transparent 60%),
-      radial-gradient(1px 1px at 141px 97px, rgba(255,255,255,0.5), transparent 60%),
-      radial-gradient(1.6px 1.6px at 233px 173px, rgba(255,226,200,0.8), transparent 60%),
-      radial-gradient(1px 1px at 317px 29px, rgba(255,255,255,0.45), transparent 60%),
-      radial-gradient(1.2px 1.2px at 389px 251px, rgba(200,220,255,0.7), transparent 60%),
-      radial-gradient(1px 1px at 71px 283px, rgba(255,255,255,0.4), transparent 60%),
-      radial-gradient(1px 1px at 191px 331px, rgba(255,255,255,0.6), transparent 60%),
-      radial-gradient(1.4px 1.4px at 57px 113px, rgba(255,255,255,0.75), transparent 60%),
-      radial-gradient(1px 1px at 263px 59px, rgba(255,240,225,0.6), transparent 60%),
-      radial-gradient(1.8px 1.8px at 409px 167px, rgba(255,255,255,0.9), transparent 60%),
-      radial-gradient(1px 1px at 487px 401px, rgba(200,215,255,0.6), transparent 60%),
-      radial-gradient(1.2px 1.2px at 131px 467px, rgba(255,255,255,0.55), transparent 60%),
-      radial-gradient(1px 1px at 557px 281px, rgba(255,255,255,0.5), transparent 60%),
-      radial-gradient(1.5px 1.5px at 331px 487px, rgba(255,220,195,0.7), transparent 60%),
-      radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.15), transparent 70%),
-      radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.10), transparent 70%),
-      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.07), transparent 70%);
-    background-size: 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px, 420px 360px,
-                     610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px, 610px 530px,
-                     100% 100%, 100% 100%, 100% 100%;
-    background-repeat: repeat, repeat, repeat, repeat, repeat, repeat, repeat,
-                       repeat, repeat, repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat, no-repeat; }
 
   /* The hero: title, a glowing Mars, its orbit and a benzene molecule */
   .hero { position: relative; overflow: hidden; padding: 104px 16px 88px; border-bottom: 1px solid var(--line);
           background: radial-gradient(ellipse 70% 90% at 85% 35%, rgba(232,121,74,0.20), transparent 60%),
-                      linear-gradient(180deg, rgba(14,11,24,0.7), rgba(7,6,13,0)); }
+                      linear-gradient(180deg, rgba(14,11,24,0.3), rgba(7,6,13,0)); }
   .hero .wrap { position: relative; z-index: 2; }
   .planet { position: absolute; z-index: 1; width: 440px; height: 440px; right: max(0px, calc(50% - 640px)); top: 48px;
             border-radius: 50%;
@@ -778,6 +754,41 @@ TRY_CSS = """
   .try .suspect.winner { border: 2px solid var(--ok); box-shadow: 0 0 28px rgba(95,211,141,0.25); }
   @media (prefers-reduced-motion: reduce) { .try * { transition: none !important; animation: none !important; } }
 """
+
+def star_tile(size, count, seed, smallest, largest, glow=False):
+    # One square tile of stars as an SVG image; the page repeats it to fill the sky.
+    # A fixed seed means the same "random" sky every time the page is built.
+    rng = np.random.default_rng(seed)
+    tints = ['#ffffff', '#ffffff', '#ffffff', '#fff1e0', '#dfe8ff']   # mostly white, some warm, some blue
+    margin = largest * 4                                              # keep glows from being cut at tile edges
+    circles = []
+    for _ in range(count):
+        x, y = rng.uniform(margin, size - margin, 2)
+        radius, brightness, tint = rng.uniform(smallest, largest), rng.uniform(0.6, 1.0), rng.choice(tints)
+        if glow:
+            circles.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='{radius * 3.5:.1f}' fill='{tint}' opacity='{brightness * 0.16:.2f}'/>")
+        circles.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='{radius:.2f}' fill='{tint}' opacity='{brightness:.2f}'/>")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{size}' height='{size}'>{''.join(circles)}</svg>"
+    return 'url("data:image/svg+xml,' + quote(svg) + '")'
+
+
+STAR_CSS = f"""
+  /* The starfield, fixed behind the whole page: many small stars, brighter stars with a soft glow,
+     faint Mars and nebula glows, and (in body::after) a few bright stars that twinkle */
+  body::before {{ content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background-image: {star_tile(600, 150, 1, 0.5, 1.1)}, {star_tile(900, 30, 2, 1.1, 1.7, glow=True)},
+      radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.15), transparent 70%),
+      radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.10), transparent 70%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.07), transparent 70%);
+    background-size: 600px 600px, 900px 900px, 100% 100%, 100% 100%, 100% 100%;
+    background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat; }}
+  body::after {{ content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background-image: {star_tile(1100, 14, 3, 1.6, 2.2, glow=True)}; background-size: 1100px 1100px;
+    animation: twinkle 4.5s ease-in-out infinite alternate; }}
+  @keyframes twinkle {{ from {{ opacity: 0.3; }} to {{ opacity: 1; }} }}
+  @media (prefers-reduced-motion: reduce) {{ body::after {{ animation: none; }} }}
+"""
+
 
 def molecule_svg():
     # A benzene molecule for the hero: six carbon atoms in a ring (with the aromatic circle), each holding a hydrogen
@@ -1102,6 +1113,7 @@ page = f"""<!doctype html>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
 {PAGE_CSS}
+{STAR_CSS}
 {TRY_CSS}
 </style>
 </head>
