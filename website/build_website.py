@@ -16,7 +16,6 @@ import html
 import json
 import math
 import re
-from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -768,38 +767,141 @@ TRY_CSS = """
   @media (prefers-reduced-motion: reduce) { .try * { transition: none !important; animation: none !important; } }
 """
 
-def star_tile(size, count, seed, smallest, largest, glow=False):
-    # One square tile of stars as an SVG image; the page repeats it to fill the sky.
-    # A fixed seed means the same "random" sky every time the page is built.
-    rng = np.random.default_rng(seed)
-    tints = ['#ffffff', '#ffffff', '#ffffff', '#fff1e0', '#dfe8ff']   # mostly white, some warm, some blue
-    margin = largest * 4                                              # keep glows from being cut at tile edges
-    circles = []
-    for _ in range(count):
-        x, y = rng.uniform(margin, size - margin, 2)
-        radius, brightness, tint = rng.uniform(smallest, largest), rng.uniform(0.6, 1.0), rng.choice(tints)
-        if glow:
-            circles.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='{radius * 3.5:.1f}' fill='{tint}' opacity='{brightness * 0.16:.2f}'/>")
-        circles.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='{radius:.2f}' fill='{tint}' opacity='{brightness:.2f}'/>")
-    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{size}' height='{size}'>{''.join(circles)}</svg>"
-    return 'url("data:image/svg+xml,' + quote(svg) + '")'
+# ---------------------------------------------------------------------------
+# The background sky: the real stars around Mars, as seen from Earth when this experiment ran.
+# Stars come from the Yale Bright Star Catalogue (every star bright enough to see with the naked eye);
+# Mars and any other planets in view are placed with astropy for the experiment's start time.
+# ---------------------------------------------------------------------------
+from astropy.time import Time
+from astropy.coordinates import get_body, solar_system_ephemeris
+from astropy.utils import iers
+
+SKY_W, SKY_H = 1600, 1000     # size of the sky image; the page stretches it to cover the screen
+SKY_WIDTH_DEG = 110           # how much sky the image shows from left to right, in degrees
+MARS_SPOT = (0.95, 0.55)      # where Mars sits in the image (fraction of width, height): near the right edge, so it
+                              # isn't hidden behind the text column, with the sky running east (left), away from the Sun
+BSC_URL = ('https://vizier.cfa.harvard.edu/viz-bin/asu-tsv?-source=V/50/catalog'
+           '&-out=_RAJ2000,_DEJ2000,Vmag,B-V,Name&-out.max=unlimited')
+PLANET_STYLE = {   # how each planet is drawn (radius in image pixels, color); planets don't twinkle.
+    # (The Moon is left out on purpose: it would sit right behind the page title.)
+    'mars': (3.2, '#ff7a45'), 'venus': (4.4, '#fff6dc'), 'jupiter': (3.6, '#ffe9c4'),
+    'saturn': (2.8, '#f3e2b8'), 'mercury': (2.2, '#e9e2d6'),
+}
 
 
-STAR_CSS = f"""
-  /* The starfield, fixed behind the whole page: many small stars, brighter stars with a soft glow,
-     faint Mars and nebula glows, and (in body::after) a few bright stars that twinkle */
-  body::before {{ content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
-    background-image: {star_tile(600, 150, 1, 0.5, 1.1)}, {star_tile(900, 30, 2, 1.1, 1.7, glow=True)},
-      radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.15), transparent 70%),
-      radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.10), transparent 70%),
-      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.07), transparent 70%);
-    background-size: 600px 600px, 900px 900px, 100% 100%, 100% 100%, 100% 100%;
-    background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat; }}
-  body::after {{ content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
-    background-image: {star_tile(1100, 14, 3, 1.6, 2.2, glow=True)}; background-size: 1100px 1100px;
-    animation: twinkle 4.5s ease-in-out infinite alternate; }}
-  @keyframes twinkle {{ from {{ opacity: 0.3; }} to {{ opacity: 1; }} }}
-  @media (prefers-reduced-motion: reduce) {{ body::after {{ animation: none; }} }}
+def load_bright_stars():
+    # The Yale Bright Star Catalogue (5th edition) from VizieR: position, brightness (V magnitude) and color (B-V)
+    text = download(BSC_URL, DATA / 'stars' / 'bsc5.tsv').read_text()
+    lines = [line for line in text.splitlines() if line.strip() and not line.startswith('#')]
+    header, rows = lines[0].split('\t'), [line.split('\t') for line in lines[3:]]   # lines 1-2: units and dashes
+    stars = pd.DataFrame(rows, columns=header).apply(lambda col: col.str.strip())
+    for col in ('_RAJ2000', '_DEJ2000', 'Vmag', 'B-V'):
+        stars[col] = pd.to_numeric(stars[col], errors='coerce')
+    stars = stars.rename(columns={'_RAJ2000': 'ra', '_DEJ2000': 'dec', 'Vmag': 'mag', 'B-V': 'bv'})
+    return stars.dropna(subset=['ra', 'dec', 'mag'])   # a few catalogue entries are not stars and have no position
+
+
+label_path = download(PDS + FILES['mass_spec'].replace('.tab', '.xml'),
+                      DATA / f'sam_eid{EID}' / FILES['mass_spec'].replace('.tab', '.xml'))
+start_utc = re.search(r'<start_date_time>([^<]+)</start_date_time>', label_path.read_text()).group(1)
+iers.conf.auto_download = False          # 2016 is covered by the Earth-rotation tables astropy ships with
+experiment_time = Time(start_utc.rstrip('Z'), scale='utc')
+with solar_system_ephemeris.set('builtin'):
+    bodies = {name: get_body(name, experiment_time) for name in PLANET_STYLE}   # as seen from Earth
+sky_centre = bodies['mars']
+
+
+def project(ra_deg, dec_deg):
+    # Azimuthal equidistant projection centred on Mars (every star keeps its true angular distance from Mars),
+    # with north up and east to the left, the way the sky looks from Earth
+    ra, dec = np.radians(ra_deg), np.radians(dec_deg)
+    ra0, dec0 = np.radians(sky_centre.ra.deg), np.radians(sky_centre.dec.deg)
+    cos_c = np.sin(dec0) * np.sin(dec) + np.cos(dec0) * np.cos(dec) * np.cos(ra - ra0)
+    c = np.arccos(np.clip(cos_c, -1, 1))                     # angular distance from Mars, in radians
+    k = np.where(c > 1e-9, c / np.sin(np.maximum(c, 1e-9)), 1.0)
+    east = k * np.cos(dec) * np.sin(ra - ra0)
+    north = k * (np.cos(dec0) * np.sin(dec) - np.sin(dec0) * np.cos(dec) * np.cos(ra - ra0))
+    scale = SKY_W / np.radians(SKY_WIDTH_DEG)       # image pixels per radian of sky
+    x = MARS_SPOT[0] * SKY_W - scale * east
+    y = MARS_SPOT[1] * SKY_H - scale * north
+    return x, y, cos_c
+
+
+def star_color(bv):
+    # Approximate color of a star from its B-V color index: blue-white (hot) to orange (cool)
+    if np.isnan(bv):
+        return '#ffffff'
+    points = [-0.40, -0.20, 0.00, 0.30, 0.60, 0.90, 1.20, 1.50, 2.00]
+    colors = ['#9bb2ff', '#a9c0ff', '#cad8ff', '#f4f3ff', '#fff2e2', '#ffe3c2', '#ffd09c', '#ffbe7e', '#ffa45a']
+    rgb = [[int(c[i:i + 2], 16) for c in colors] for i in (1, 3, 5)]
+    return '#' + ''.join(f'{int(round(np.interp(bv, points, channel))):02x}' for channel in rgb)
+
+
+def write_sky_images():
+    stars = load_bright_stars()
+    x, y, cos_c = project(stars['ra'].to_numpy(), stars['dec'].to_numpy())
+    stars = stars.assign(x=x, y=y, cos_c=cos_c)
+    margin = 20
+    near = np.cos(np.radians(125))     # keep stars up to 125 degrees from Mars (the image reaches about 105)
+    in_view = stars[(stars['cos_c'] > near) & stars['x'].between(-margin, SKY_W + margin) & stars['y'].between(-margin, SKY_H + margin)]
+    in_view = in_view.sort_values('mag', ascending=False)        # faint first, so bright stars are drawn on top
+    shapes, twinkles = [], []
+    for s in in_view.itertuples():
+        radius = float(np.clip(3.3 - 0.4 * s.mag, 0.9, 4.6))     # brighter star (smaller magnitude) = bigger dot
+        opacity = float(np.clip(1.35 - 0.1 * s.mag, 0.6, 1.0))
+        color = star_color(s.bv)
+        if s.mag < 3.5:
+            shapes.append(f'<circle cx="{s.x:.1f}" cy="{s.y:.1f}" r="{radius * 4:.1f}" fill="{color}" opacity="0.16"/>')
+        if s.mag < 2.6:
+            twinkles.append(f'<circle cx="{s.x:.1f}" cy="{s.y:.1f}" r="{radius * 6:.1f}" fill="{color}" opacity="0.16"/>'
+                            f'<circle cx="{s.x:.1f}" cy="{s.y:.1f}" r="{radius * 1.4:.1f}" fill="{color}"/>')
+        shapes.append(f'<circle cx="{s.x:.1f}" cy="{s.y:.1f}" r="{radius:.2f}" fill="{color}" opacity="{opacity:.2f}"/>')
+    planets_in_view = []
+    for name, body in bodies.items():
+        px, py, pc = project(body.ra.deg, body.dec.deg)
+        if pc > near and 0 <= px <= SKY_W and 0 <= py <= SKY_H:
+            radius, color = PLANET_STYLE[name]
+            shapes.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{radius * 4:.1f}" fill="{color}" opacity="0.2"/>'
+                          f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{radius:.1f}" fill="{color}"/>')
+            planets_in_view.append(name.title())
+    svg = lambda body: (f'<svg xmlns="http://www.w3.org/2000/svg" width="{SKY_W}" height="{SKY_H}" '
+                        f'viewBox="0 0 {SKY_W} {SKY_H}">{body}</svg>\n')
+    (OUT.parent / 'sky.svg').write_text(svg(''.join(shapes)))
+    (OUT.parent / 'sky-twinkle.svg').write_text(svg(''.join(twinkles)))
+    return len(in_view), planets_in_view
+
+
+OUT.parent.mkdir(exist_ok=True)
+sky_star_count, sky_planets = write_sky_images()
+others = [p for p in sky_planets if p != 'Mars']
+sky_credit = (f'Background sky: the real stars around Mars (the red point near the right edge) as seen from Earth on '
+              f'{experiment_time.datetime:%d %B %Y}, when this experiment ran'
+              + (f', with {" and ".join(others)} nearby' if others else '') + '. '
+              f'{sky_star_count} stars from the Yale Bright Star Catalogue (5th edition, via VizieR); '
+              f'planet positions computed with astropy.')
+with solar_system_ephemeris.set('builtin'):
+    sun = get_body('sun', experiment_time)
+print(f'sky: {sky_star_count} stars, planets in view: {sky_planets}; the Sun is {sun.separation(sky_centre).deg:.0f} deg from Mars, '
+      f'at x={project(sun.ra.deg, sun.dec.deg)[0]:.0f} px (image is 0-{SKY_W}); Mars at RA {sky_centre.ra.hour:.2f} h, '
+      f'Dec {sky_centre.dec.deg:.1f} deg on {start_utc}')
+
+
+STAR_CSS = """
+  /* The background sky (sky.svg, drawn by this script from real star positions) plus faint Mars and nebula glows,
+     fixed behind the whole page; the brightest stars twinkle (body::after), the planets don't */
+  body::before { content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background-image: url("sky.svg"),
+      radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.13), transparent 70%),
+      radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.09), transparent 70%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.06), transparent 70%);
+    background-size: cover, 100% 100%, 100% 100%, 100% 100%;
+    background-position: right center, 0 0, 0 0, 0 0;
+    background-repeat: no-repeat; }
+  body::after { content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background: url("sky-twinkle.svg") right center / cover no-repeat;
+    animation: twinkle 4.5s ease-in-out infinite alternate; }
+  @keyframes twinkle { from { opacity: 0.25; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { body::after { animation: none; } }
 """
 
 
@@ -1264,7 +1366,7 @@ grams: turning them into an actual amount needs the instrument’s calibration.<
   <li>Code: the analysis notebook (<code>notebooks/11_mars_organics_prototype.ipynb</code>) and this page’s builder
       (<code>website/build_website.py</code>) are in the <a href="{REPO_URL}">project’s GitHub repository</a>.</li>
 </ul>
-<footer>Made with Python (pandas, plotly) for CS85. Graphs are built directly from NASA’s public data.</footer>
+<footer>Made with Python (pandas, plotly) for CS85. Graphs are built directly from NASA’s public data.<br>{html.escape(sky_credit)}</footer>
 </main>
 {try_script}
 </body>
