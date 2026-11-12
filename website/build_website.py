@@ -636,6 +636,19 @@ PAGE_CSS = """
               filter: drop-shadow(0 0 10px rgba(243,201,139,0.35)); animation: spin 160s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .wrap, main { max-width: 1040px; margin: 0 auto; }
+  /* Keep stars from sitting directly behind text: a soft dark band behind the reading column (its edges fade
+     out, so the stars stay clear on either side), and a soft dark oval behind the hero text */
+  main { position: relative; }
+  main::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; right: 0; z-index: -1; pointer-events: none;
+                 background: rgba(7,6,13,0.95); }
+  @media (min-width: 1140px) {
+    main::before { left: -48px; right: -48px;
+                   background: linear-gradient(90deg, rgba(7,6,13,0), rgba(7,6,13,0.95) 48px,
+                                                       rgba(7,6,13,0.95) calc(100% - 48px), rgba(7,6,13,0)); }
+  }
+  .hero .wrap::before { content: ''; position: absolute; z-index: -1; pointer-events: none;
+                        left: -160px; top: -100px; bottom: -100px; width: min(960px, calc(100% + 320px));
+                        background: radial-gradient(closest-side, rgba(7,6,13,0.93) 0%, rgba(7,6,13,0.93) 75%, rgba(7,6,13,0)); }
   main { padding: 8px 16px 72px; }
   .eyebrow { font: 600 13px/1.4 var(--mono); letter-spacing: 3px; text-transform: uppercase; color: var(--mars-soft); margin: 0 0 14px; }
   h1 { font: 700 clamp(46px, 8.5vw, 92px)/0.98 var(--display); letter-spacing: -0.03em; color: var(--ink); margin: 0 0 22px; max-width: 640px; }
@@ -775,14 +788,14 @@ def star_tile(size, count, seed, smallest, largest, glow=False):
 STAR_CSS = f"""
   /* The starfield, fixed behind the whole page: many small stars, brighter stars with a soft glow,
      faint Mars and nebula glows, and (in body::after) a few bright stars that twinkle */
-  body::before {{ content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  body::before {{ content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
     background-image: {star_tile(600, 150, 1, 0.5, 1.1)}, {star_tile(900, 30, 2, 1.1, 1.7, glow=True)},
       radial-gradient(ellipse 60% 45% at 100% 0%, rgba(232,121,74,0.15), transparent 70%),
       radial-gradient(ellipse 50% 40% at 0% 55%, rgba(110,90,210,0.10), transparent 70%),
       radial-gradient(ellipse 60% 40% at 100% 100%, rgba(232,121,74,0.07), transparent 70%);
     background-size: 600px 600px, 900px 900px, 100% 100%, 100% 100%, 100% 100%;
     background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat; }}
-  body::after {{ content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  body::after {{ content: ''; position: fixed; inset: 0; z-index: -2; pointer-events: none;
     background-image: {star_tile(1100, 14, 3, 1.6, 2.2, glow=True)}; background-size: 1100px 1100px;
     animation: twinkle 4.5s ease-in-out infinite alternate; }}
   @keyframes twinkle {{ from {{ opacity: 0.3; }} to {{ opacity: 1; }} }}
