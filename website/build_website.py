@@ -13,6 +13,7 @@ NIST Chemistry WebBook. Downloads are cached in data/ (never committed).
 """
 from pathlib import Path
 import html
+import json
 import re
 
 import numpy as np
@@ -437,6 +438,219 @@ clue_table = '\n'.join(f'<tr><td><b>{a}</b></td><td>{html.escape(b)}</td><td>{c}
 
 
 # ---------------------------------------------------------------------------
+# 2c. "Try it yourself" boxes: each section's information in an interactive,
+#     non-graph form. Python works out the numbers (all from the real data);
+#     the JavaScript in TRY_JS (further down) makes the boxes interactive.
+# ---------------------------------------------------------------------------
+def top_pieces(spectrum, n=5):
+    # The n biggest pieces of a fingerprint (weights 35 and up), as % of the biggest
+    s = spectrum[spectrum.index >= 35]
+    s = 100 * s / s.max()
+    return [[int(m), int(round(v))] for m, v in s.nlargest(n).items()]
+
+
+oven_peak = ms.loc[ms['oven_T'].idxmax()]
+heating = ms[ms['minutes'] <= oven_peak['minutes']]
+gc_min = {column: (start - t0) / 60 for column, start in gc_start.items()}
+comparison['within'] = comparison['difference'].abs() <= comparison['column'].map(scan_time)
+by_peak = comparison.set_index('peak')
+
+# The lab: oven, a race through tube 4, and benzene's pieces
+tube4 = runs[4]
+near_toluene = tube4[(tube4['mass'] == 127) & tube4['rt'].between(890, 920)]
+runners = [{'name': 'Unnamed bump 9', 't': float(by_peak.loc[9, 'team_time'])},
+           {'name': 'Benzene (bump 13)', 't': float(by_peak.loc[13, 'team_time'])},
+           {'name': 'Toluene (bump 14)', 't': float(by_peak.loc[14, 'team_time'])},
+           {'name': 'Mystery chemical', 't': round(float(near_toluene.loc[near_toluene['cps'].idxmax(), 'rt']), 1)}]
+race_end = max(r['t'] for r in runners) + 30
+lab_data = {'oven_min': round(float(heating['oven_T'].min())), 'oven_max': round(float(oven_peak['oven_T'])),
+            'runners': runners, 'race_end': race_end, 'benzene_pieces': top_pieces(by_peak.loc[13, 'spectrum'])}
+
+
+# Time machine: what was happening in each minute of the experiment
+def stage_at(minute):   # minute = a whole minute; a stage counts if it starts during that minute
+    if minute <= oven_peak['minutes']:
+        return 'Oven heats the rock'
+    if gc_min[1] < minute + 1 and minute < gc_min[1] + RUN_LENGTH[1] / 60:
+        return 'Sorting run 1 (tube 1)'
+    if gc_min[4] < minute + 1:
+        return 'Sorting run 2 (tube 4)'
+    return 'Between stages'
+
+
+moments = {int(oven_peak['minutes']): f"The oven reaches its hottest: {oven_peak['oven_T']:.0f} °C.",
+           int(gc_min[1]): 'Gas is pushed into tube 1: sorting run 1 starts.',
+           int(gc_min[4]): 'Gas is pushed into tube 4: sorting run 2 starts.'}
+for _, p in team[(team['team_name'] != '') & ~team['event']].iterrows():
+    moments[int(gc_min[p['gc_column']] + p['team_time_s'] / 60)] = (
+        f"{p['team_name'].title()} (NASA’s bump {p['peak']}) comes out of tube {p['gc_column']}.")
+minutes_groups = dict(tuple(ms.groupby(ms['minutes'].astype(int))))
+
+
+def biggest(rows, mass):
+    values = rows.loc[rows['mass'] == mass, 'cps']
+    return None if values.empty else int(round(values.max()))
+
+
+timeline = []
+for minute in range(int(ms['minutes'].max()) + 1):
+    rows = minutes_groups.get(minute)
+    has_data = rows is not None and not rows.empty
+    timeline.append({'stage': stage_at(minute),
+                     'oven': int(round(rows['oven_T'].mean())) if has_data and minute <= oven_peak['minutes'] else None,
+                     'b': biggest(rows, 78) if has_data else None,
+                     't': biggest(rows, 91) if has_data else None,
+                     'note': moments.get(minute)})
+jumps = [('Oven at its hottest', int(oven_peak['minutes'])), ('Sorting run 1 starts', int(gc_min[1])),
+         ('Benzene comes out', int(gc_min[4] + by_peak.loc[13, 'team_time'] / 60)),
+         ('Toluene comes out', int(gc_min[4] + by_peak.loc[14, 'team_time'] / 60))]
+
+# Finish-line replay: every entry on NASA's list, in time order, for each tube
+race = {}
+for column in (1, 4):
+    entries = []
+    for _, p in team[team['gc_column'] == column].sort_values('team_time_s').iterrows():
+        if p['event']:
+            label = ('Start: gas is pushed into the tube' if p['team_time_s'] == 0
+                     else f"Instrument event (NASA’s bump {p['peak']}): the trap is flash-heated again")
+            entries.append({'t': float(p['team_time_s']), 'event': True, 'label': label})
+        else:
+            d = by_peak.loc[p['peak']]
+            entries.append({'t': float(d['team_time']), 'event': False, 'peak': int(p['peak']), 'name': d['name'],
+                            'our': float(d['our_time']), 'diff': float(d['difference']) or 0.0,
+                            'within': bool(d['within']), 'masses': d['masses']})
+    race[column] = {'length': RUN_LENGTH[column], 'entries': entries}
+
+# Fingerprint game: three bumps, two lab fingerprints
+game = {'bumps': {str(p): {'name': by_peak.loc[p, 'name'], 'pieces': top_pieces(by_peak.loc[p, 'spectrum']),
+                           'scores': {'benzene': float(by_peak.loc[p, 'benzene']), 'toluene': float(by_peak.loc[p, 'toluene'])}}
+                  for p in (13, 14, 21)},
+        'refs': {m: top_pieces(REFERENCE[m]) for m in ('benzene', 'toluene')}}
+
+# Add it up: the real readings under the benzene and toluene bumps
+add_up = {}
+for peak, molecule, mass in [(13, 'benzene', 78), (14, 'toluene', 91)]:
+    area, used = peak_area(4, mass, by_peak.loc[peak, 'team_time'])
+    add_up[molecule] = {'readings': [[round(float(t), 2), int(round(c))] for t, c in zip(used['rt'], used['cps'])],
+                        'nasa': float(team.set_index('peak').loc[peak, 'team_area'])}
+
+# Bump cards
+cards = [{'peak': int(d['peak']), 'tube': int(d['column']), 'name': d['name'], 'team': float(d['team_time']),
+          'our': float(d['our_time']), 'diff': float(d['difference']) or 0.0, 'within': bool(d['within']),
+          'masses': d['masses'], 'benzene': float(d['benzene']), 'toluene': float(d['toluene'])}
+         for _, d in comparison.iterrows()]
+card_filters = [('all', 'All', len(cards)), ('within', 'Matched within one reading', int(comparison['within'].sum())),
+                ('off', 'Further off', int((~comparison['within']).sum())),
+                ('named', 'Named by NASA', int((comparison['name'] != '').sum())),
+                ('benzene', 'Looks like benzene (0.8+)', int((comparison['benzene'] >= 0.8).sum()))]
+
+# Solve the case: each suspect's formula, weight (most common isotopes), carbon count and nitrogen
+SUSPECT_FACTS = {
+    'N-methyl-trifluoroacetamide': ('C₃H₄F₃NO', 127, 3, True),
+    'trifluoroiodomethane (CF3I)': ('CF₃I', 196, 1, False),
+    'acetone': ('C₃H₆O', 58, 3, False),
+    'iodomethane (CH3I)': ('CH₃I', 142, 1, False),
+    'benzene': ('C₆H₆', 78, 6, False),
+    'trifluoroacetamide': ('C₂H₂F₃NO', 113, 2, True),
+    'chloromethane': ('CH₃Cl', 50, 1, False),
+    'dichloromethane': ('CH₂Cl₂', 84, 1, False),
+    'toluene': ('C₇H₈', 92, 7, False),
+}
+carbons = int(round(echo1 / 0.011))
+case = {'heaviest': heaviest, 'carbons': carbons, 'best': best, 'best_score': float(lineup[best]),
+        'suspects': [{'name': name, 'formula': f, 'mw': mw, 'carbons': c, 'has_n': n, 'score': float(lineup[name])}
+                     for name, (f, mw, c, n) in SUSPECT_FACTS.items()],
+        'clues': [f'The heaviest piece is {heaviest}, so the chemical weighs at least {heaviest}.',
+                  f'Nothing heavier shows up: the pieces at 142 and 196 (the whole weights of iodomethane and CF₃I) are '
+                  f'{mystery_pct[142]:.1f}% and {mystery_pct[196]:.1f}% of the biggest piece. So it weighs exactly {heaviest}.',
+                  'An odd weight means the chemical contains nitrogen (the “nitrogen rule”).',
+                  f'The echo at 128 is {echo1:.1%} of 127: about {carbons} carbon atoms.',
+                  f'Fingerprint lineup: {best} scores {lineup[best]:.3f}; the next best scores {lineup[runner_up]:.2f}.']}
+
+try_data = {'lab': lab_data, 'timeline': timeline, 'race': race, 'game': game, 'add_up': add_up,
+            'cards': cards, 'case': case}
+
+
+def try_box(box_id, title, intro, body):
+    return (f'<section class="try" id="{box_id}" aria-label="Try it yourself: {html.escape(title)}">\n'
+            f'<p class="label">Try it yourself</p>\n<h3>{title}</h3>\n<p>{intro}</p>\n{body}\n</section>')
+
+
+lanes = '\n'.join(f'<div class="lane"><span>{html.escape(r["name"])}</span><div class="lane-track">'
+                  f'<span class="runner" aria-hidden="true">●</span></div></div>' for r in runners)
+try_lab = try_box('try-lab', 'Run the rover’s lab', 'Step through the three stages. The numbers come from the real experiment.', f'''
+<div class="row" role="group" aria-label="Steps"><button class="step-tab">1 · Bake</button><button class="step-tab">2 · Sort</button><button class="step-tab">3 · Weigh</button></div>
+<div class="panel step-panel">
+  <p>The oven heated the rock powder from about {lab_data["oven_min"]} °C to {lab_data["oven_max"]} °C, over about {oven_peak["minutes"]:.0f} minutes.</p>
+  <div class="row"><button id="heat">Heat the oven</button> <span class="big-number" id="oven-temp" aria-live="polite">{lab_data["oven_min"]} °C</span></div>
+  <div class="meter" aria-hidden="true"><div id="oven-bar"></div></div>
+</div>
+<div class="panel step-panel" hidden>
+  <p>In tube 4, chemicals race to the finish line. Each runner arrives at its real time, sped up about {race_end / 6:.0f} times.</p>
+  <div class="row"><button id="race">Start the race</button> <span>Clock: <b id="race-clock">0 s</b></span></div>
+  {lanes}
+  <p>Finish order:</p><ol id="finish-order" aria-live="polite"></ol>
+</div>
+<div class="panel step-panel" hidden>
+  <p>As each chemical comes out, it is smashed into pieces and the pieces are weighed. These are the biggest pieces counted when benzene came out (bump 13).</p>
+  <div class="row"><button id="smash">Smash a benzene molecule</button></div>
+  <div id="pieces" aria-live="polite"></div>
+  <p class="small">Together, these piece weights are benzene’s fingerprint.</p>
+</div>''')
+
+jump_buttons = ''.join(f'<button data-jump="{minute}">{label}</button>' for label, minute in jumps)
+try_overview = try_box('try-time', 'Time machine',
+    'Drag the slider to travel through the four-hour experiment. The numbers are the real readings for each minute (the biggest one in that minute).', f'''
+<label for="tm-slider">Minute of the experiment</label>
+<input type="range" id="tm-slider" min="0" max="{len(timeline) - 1}" step="1" value="0">
+<div class="row"><span>Jump to:</span>{jump_buttons}</div>
+<div class="panel tm-grid">
+  <div><span class="small">Time</span><b id="tm-minute"></b></div>
+  <div><span class="small">Stage</span><b id="tm-stage"></b></div>
+  <div><span class="small">Oven</span><b id="tm-oven"></b></div>
+  <div><span class="small">Weight 78 (benzene)</span><b id="tm-78"></b></div>
+  <div><span class="small">Weight 91 (toluene)</span><b id="tm-91"></b></div>
+</div>
+<p id="tm-note" aria-live="polite"></p>''')
+
+try_race = try_box('try-replay', 'Finish-line replay',
+    'Replay a sorting run. As the clock passes each bump on NASA’s list, a card shows when NASA saw it and when the raw data shows it.', '''
+<div class="row" role="group" aria-label="Sorting run"><span>Run:</span><button data-tube="1">Tube 1</button><button data-tube="4" class="on">Tube 4</button></div>
+<div class="row" role="group" aria-label="Speed"><span>Speed:</span><button data-speed="25">25×</button><button data-speed="50" class="on">50×</button><button data-speed="150">150×</button></div>
+<div class="row"><button id="rp-play">▶ Play</button><button id="rp-reset">Reset</button><button id="rp-end">Skip to the end</button><span>Clock: <b id="rp-clock">0 s</b></span></div>
+<p id="rp-count" aria-live="polite"></p>
+<ol id="rp-list" class="feed"></ol>''')
+
+try_fingerprint = try_box('try-finger', 'Match the fingerprint',
+    'Pick a bump and look at the pieces the raw data shows. Then guess which lab fingerprint it matches. '
+    '(Pieces lighter than 35 are left out, as in the similarity score.)', '''
+<div class="row" role="group" aria-label="Bump"><span>Bump:</span><button data-bump="13">13</button><button data-bump="14">14</button><button data-bump="21">21</button></div>
+<div class="panel"><b>Pieces in the raw data</b><div id="fg-pieces"></div></div>
+<p>Which lab fingerprint does it match?</p>
+<div class="guess-row"><button class="card" data-guess="benzene"><b>Benzene</b><span class="refpieces"></span></button><button class="card" data-guess="toluene"><b>Toluene</b><span class="refpieces"></span></button></div>
+<p id="fg-verdict" aria-live="polite"></p>''')
+
+try_areas = try_box('try-add', 'Add it up yourself',
+    'The size of a bump is the area under it. Build it up one slice at a time: each slice is the time between two readings × their average height.', '''
+<div class="row" role="group" aria-label="Chemical"><button data-mol="benzene">Benzene (bump 13, weight 78)</button><button data-mol="toluene">Toluene (bump 14, weight 91)</button></div>
+<div class="row"><button id="au-next">Add the next slice</button><button id="au-all">Add them all</button><button id="au-reset">Start over</button><span>Running total: <b id="au-total">0</b></span></div>
+<div class="table-wrap"><table class="clues addup"><thead><tr><th>Time (s)</th><th>Reading (counts per second)</th><th>Slice added (seconds × average reading)</th></tr></thead><tbody></tbody></table></div>
+<p id="au-msg" aria-live="polite"></p>''')
+
+try_cards = try_box('try-cards', 'Bump cards', 'Filter NASA’s bumps, then tap a card to see its details.',
+    '<div class="row" role="group" aria-label="Filter">'
+    + ''.join(f'<button data-filter="{key}">{label} ({count})</button>' for key, label, count in card_filters)
+    + '</div>\n<div class="cards"></div>\n<p id="bc-detail" class="panel" aria-live="polite"></p>')
+
+try_case = try_box('try-case', 'Solve the case',
+    f'{len(SUSPECT_FACTS)} suspects. Reveal the clues one at a time and watch the suspects get ruled out.', f'''
+<div class="cards"></div>
+<div class="row"><button id="cs-next">Reveal clue 1 of {len(case["clues"])}</button></div>
+<ol id="cs-clues" aria-live="polite"></ol>''')
+
+
+
+# ---------------------------------------------------------------------------
 # 3. The web page
 # ---------------------------------------------------------------------------
 CONFIG = {'displaylogo': False, 'responsive': True,
@@ -446,6 +660,334 @@ CONFIG = {'displaylogo': False, 'responsive': True,
 def chart(fig):
     return fig.to_html(full_html=False, include_plotlyjs=False, config=CONFIG)
 
+
+TRY_CSS = """
+  /* "Try it yourself" boxes */
+  .try { background: var(--sand); border-radius: 14px; padding: 18px 20px; margin: 28px 0 8px; }
+  .try [hidden] { display: none !important; }
+  .try .label { font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--accent); margin: 0 0 2px; }
+  .try h3 { margin: 0 0 6px; }
+  .try button { font: inherit; font-size: 15px; line-height: 1.3; padding: 7px 14px; min-height: 36px; border-radius: 999px;
+                border: 1px solid #cfc6b8; background: var(--card); color: var(--ink); cursor: pointer; }
+  .try button:hover { border-color: var(--accent); }
+  .try button:focus-visible { outline: 2px solid #1c5cab; outline-offset: 2px; }
+  .try button.on { background: var(--ink); border-color: var(--ink); color: #f4efe9; }
+  .try .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+  .try .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin: 10px 0; max-width: none; }
+  .try .small, .try label { font-size: 14px; color: var(--muted); }
+  .try input[type=range] { width: 100%; accent-color: var(--accent); }
+  .try .chip { display: inline-block; padding: 3px 10px; margin: 6px 6px 0 0; border-radius: 999px; background: var(--page);
+               border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .try .ok { color: #006300; font-weight: 600; }
+  .try .no { color: var(--accent); font-weight: 600; }
+  .try .big-number { font-size: 32px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .try .meter { height: 12px; background: var(--page); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .try .meter div { height: 100%; width: 0; background: var(--accent); }
+  .try .lane { display: grid; grid-template-columns: minmax(110px, 170px) 1fr; gap: 10px; align-items: center; margin: 6px 0; font-size: 14px; }
+  .try .lane-track { position: relative; height: 26px; background: var(--page); border: 1px solid var(--line); border-radius: 999px; }
+  .try .lane-track::after { content: ''; position: absolute; right: 22px; top: 2px; bottom: 2px; border-right: 2px solid var(--ink); }
+  .try .runner { position: absolute; left: 0; top: 1px; width: 22px; text-align: center; font-size: 18px; line-height: 22px; color: var(--accent); }
+  .try .tm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .try .tm-grid b { display: block; color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .try .feed { list-style: none; padding: 0; max-height: 340px; overflow-y: auto; }
+  .try .feed li { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 6px 0; }
+  .try .cards, .try .guess-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
+  .try .card { display: block; text-align: left; border-radius: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line);
+               overflow-wrap: anywhere; }
+  #try-case .cards { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .try button.card.on { background: var(--card); color: var(--ink); border: 2px solid var(--ink); }
+  .try .refpieces { display: block; }
+  .try .suspect.out { opacity: 0.55; }
+  .try .suspect.out b { text-decoration: line-through; }
+  .try .suspect .why { font-size: 13px; margin-top: 4px; }
+  .try .suspect.winner { border: 2px solid #006300; }
+  .try table.addup tr.added td { background: #fbf3ea; }
+  @media (prefers-reduced-motion: reduce) { .try * { transition: none !important; animation: none !important; } }
+"""
+
+TRY_JS = r"""
+(function () {
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const num = (n, digits = 0) => n == null ? '—' :
+    Number(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const millions = n => (n / 1e6).toFixed(1) + ' million';
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  // Run draw(fraction) from 0 to 1 over ms milliseconds (or jump straight to 1 if the reader prefers less motion)
+  function animate(ms, draw, done) {
+    if (reduceMotion) { draw(1); if (done) done(); return; }
+    const start = performance.now();
+    function frame(now) {
+      const f = Math.min(1, (now - start) / ms);
+      draw(f);
+      if (f < 1) requestAnimationFrame(frame); else if (done) done();
+    }
+    requestAnimationFrame(frame);
+  }
+  function pick(buttons, chosen) { buttons.forEach(b => b.classList.toggle('on', b === chosen)); }
+
+  // ---- Run the rover's lab: bake, sort, weigh ----
+  const lab = document.getElementById('try-lab');
+  if (lab) {
+    const L = TRY.lab;
+    const tabs = [...lab.querySelectorAll('.step-tab')], panels = [...lab.querySelectorAll('.step-panel')];
+    const showStep = i => { panels.forEach((p, j) => p.hidden = j !== i); pick(tabs, tabs[i]); };
+    tabs.forEach((t, i) => t.addEventListener('click', () => showStep(i)));
+    showStep(0);
+
+    lab.querySelector('#heat').addEventListener('click', () => {
+      const out = lab.querySelector('#oven-temp'), bar = lab.querySelector('#oven-bar');
+      animate(2500, f => {
+        out.textContent = num(L.oven_min + f * (L.oven_max - L.oven_min)) + ' °C';
+        bar.style.width = (f * 100) + '%';
+      });
+    });
+
+    lab.querySelector('#race').addEventListener('click', () => {
+      const dots = lab.querySelectorAll('.runner'), order = lab.querySelector('#finish-order'), clock = lab.querySelector('#race-clock');
+      order.innerHTML = '';
+      const finished = new Set();
+      animate(6000, f => {
+        const now = f * L.race_end;
+        clock.textContent = num(now) + ' s';
+        L.runners.forEach((r, i) => {
+          const g = Math.min(1, now / r.t);           // each runner reaches the finish at its real time
+          dots[i].style.left = `calc(${g * 100}% - ${g * 22}px)`;
+          if (g >= 1 && !finished.has(i)) { finished.add(i); order.append(el('li', null, `${r.name}: ${num(r.t)} s`)); }
+        });
+      });
+    });
+
+    lab.querySelector('#smash').addEventListener('click', () => {
+      const box = lab.querySelector('#pieces');
+      box.innerHTML = '';
+      L.benzene_pieces.forEach(([mass, pct], i) =>
+        setTimeout(() => box.append(el('span', 'chip', `piece ${mass}: ${pct}%`)), reduceMotion ? 0 : i * 250));
+    });
+  }
+
+  // ---- Time machine: one minute of the experiment at a time ----
+  const tm = document.getElementById('try-time');
+  if (tm) {
+    const slider = tm.querySelector('#tm-slider');
+    const show = minute => {
+      const d = TRY.timeline[minute];
+      slider.value = minute;
+      tm.querySelector('#tm-minute').textContent = `Minute ${minute}`;
+      tm.querySelector('#tm-stage').textContent = d.stage;
+      tm.querySelector('#tm-oven').textContent = d.oven == null ? '—' : num(d.oven) + ' °C';
+      tm.querySelector('#tm-78').textContent = d.b == null ? 'no reading' : num(d.b) + ' counts/s';
+      tm.querySelector('#tm-91').textContent = d.t == null ? 'no reading' : num(d.t) + ' counts/s';
+      tm.querySelector('#tm-note').textContent = d.note || (d.b == null && d.t == null ? 'The file has no measurements in this minute.' : '');
+    };
+    slider.addEventListener('input', () => show(+slider.value));
+    tm.querySelectorAll('[data-jump]').forEach(b => b.addEventListener('click', () => show(+b.dataset.jump)));
+    show(0);
+  }
+
+  // ---- Finish-line replay of a sorting run ----
+  const rp = document.getElementById('try-replay');
+  if (rp) {
+    let tube = 4, speed = 50, clockTime = 0, shown = 0, playing = false, last = null;
+    const list = rp.querySelector('#rp-list'), clock = rp.querySelector('#rp-clock');
+    const count = rp.querySelector('#rp-count'), playBtn = rp.querySelector('#rp-play');
+    function card(e) {
+      const li = el('li');
+      if (e.event) { li.append(el('b', null, `${num(e.t)} s · `), document.createTextNode(e.label)); return li; }
+      li.append(el('b', null, `${num(e.t)} s · Bump ${e.peak}${e.name ? ' · ' + e.name : ''}`), el('br'),
+                document.createTextNode(`Raw data: ${num(e.our, 1)} s (${e.diff >= 0 ? '+' : ''}${num(e.diff, 1)} s) `),
+                el('span', e.within ? 'ok' : 'no', e.within ? '✓ within one reading' : '≈ further off'), el('br'),
+                document.createTextNode(`Strongest pieces: ${e.masses}`));
+      return li;
+    }
+    function update() {
+      const run = TRY.race[tube];
+      clock.textContent = num(clockTime) + ' s';
+      while (shown < run.entries.length && run.entries[shown].t <= clockTime) list.prepend(card(run.entries[shown++]));
+      const bumps = run.entries.filter(e => !e.event).length;
+      const crossed = run.entries.slice(0, shown).filter(e => !e.event).length;
+      count.textContent = `${crossed} of ${bumps} bumps have crossed the finish line`;
+      if (clockTime >= run.length) { playing = false; playBtn.textContent = '▶ Play'; }
+    }
+    function reset() { clockTime = 0; shown = 0; playing = false; list.innerHTML = ''; playBtn.textContent = '▶ Play'; update(); }
+    function frame(now) {
+      if (!playing) return;
+      if (last != null) clockTime = Math.min(TRY.race[tube].length, clockTime + (now - last) / 1000 * speed);
+      last = now;
+      update();
+      if (playing) requestAnimationFrame(frame);
+    }
+    playBtn.addEventListener('click', () => {
+      if (clockTime >= TRY.race[tube].length) reset();
+      playing = !playing;
+      playBtn.textContent = playing ? '❚❚ Pause' : '▶ Play';
+      last = null;
+      if (playing) requestAnimationFrame(frame);
+    });
+    rp.querySelector('#rp-reset').addEventListener('click', reset);
+    rp.querySelector('#rp-end').addEventListener('click', () => { clockTime = TRY.race[tube].length; update(); });
+    const tubeBtns = [...rp.querySelectorAll('[data-tube]')], speedBtns = [...rp.querySelectorAll('[data-speed]')];
+    tubeBtns.forEach(b => b.addEventListener('click', () => { tube = +b.dataset.tube; pick(tubeBtns, b); reset(); }));
+    speedBtns.forEach(b => b.addEventListener('click', () => { speed = +b.dataset.speed; pick(speedBtns, b); }));
+    reset();
+  }
+
+  // ---- Match the fingerprint ----
+  const fg = document.getElementById('try-finger');
+  if (fg) {
+    const G = TRY.game;
+    let bump = '13';
+    const pieces = fg.querySelector('#fg-pieces'), verdict = fg.querySelector('#fg-verdict');
+    const bumpBtns = [...fg.querySelectorAll('[data-bump]')], guessBtns = [...fg.querySelectorAll('[data-guess]')];
+    guessBtns.forEach(card => G.refs[card.dataset.guess].forEach(([m, p]) =>
+      card.querySelector('.refpieces').append(el('span', 'chip', `${m}: ${p}%`))));
+    const showBump = b => {
+      bump = b;
+      pick(bumpBtns, bumpBtns.find(x => x.dataset.bump === b));
+      pick(guessBtns, null);
+      verdict.textContent = '';
+      pieces.innerHTML = '';
+      G.bumps[b].pieces.forEach(([m, p]) => pieces.append(el('span', 'chip', `${m}: ${p}%`)));
+    };
+    guessBtns.forEach(card => card.addEventListener('click', () => {
+      const s = G.bumps[bump].scores, name = G.bumps[bump].name;
+      const best = s.benzene >= s.toluene ? 'benzene' : 'toluene';
+      const right = card.dataset.guess === best;
+      pick(guessBtns, card);
+      verdict.innerHTML = '';
+      verdict.append(el('span', right ? 'ok' : 'no', right ? '✓ Good call. ' : `✗ It’s closer to ${best}. `));
+      let text = `Similarity: benzene ${s.benzene.toFixed(2)}, toluene ${s.toluene.toFixed(2)}. `;
+      if (s[best] >= 0.95) text += `That’s a near-perfect match: bump ${bump} really is ${best}.`;
+      else if (s[best] >= 0.7) text += `It looks a lot like ${best}, but not perfectly.` +
+                                       (name ? '' : ' NASA didn’t name this bump, so it’s an open question.');
+      else text += 'Even the closest match is weak: pieces that belong to neither chemical are mixed in ' +
+                   '(the Bonus section below works out what they are).' + (name ? ` NASA named this bump ${name}.` : '');
+      verdict.append(document.createTextNode(text));
+    }));
+    bumpBtns.forEach(x => x.addEventListener('click', () => showBump(x.dataset.bump)));
+    showBump('13');
+  }
+
+  // ---- Add it up yourself: the area under a bump, one slice at a time ----
+  const au = document.getElementById('try-add');
+  if (au) {
+    const A = TRY.add_up;
+    let mol = 'benzene', next = 1, total = 0;
+    const body = au.querySelector('tbody'), totalOut = au.querySelector('#au-total'), msg = au.querySelector('#au-msg');
+    const molBtns = [...au.querySelectorAll('[data-mol]')];
+    function load(m) {
+      mol = m; next = 1; total = 0;
+      body.innerHTML = ''; msg.textContent = ''; totalOut.textContent = '0';
+      pick(molBtns, molBtns.find(x => x.dataset.mol === m));
+      A[m].readings.forEach(([t, c], i) => {
+        const tr = el('tr');
+        tr.append(el('td', null, num(t, 1)), el('td', null, num(c)), el('td', null, i === 0 ? 'first reading' : ''));
+        body.append(tr);
+      });
+    }
+    function addSlice() {
+      const r = A[mol].readings;
+      if (next >= r.length) return;
+      const [t1, c1] = r[next - 1], [t2, c2] = r[next];
+      const slice = (t2 - t1) * (c1 + c2) / 2;
+      total += slice;
+      body.rows[next].cells[2].textContent = `${num(t2 - t1, 1)} s × ${num((c1 + c2) / 2)} = ${num(slice)}`;
+      body.rows[next].classList.add('added');
+      next++;
+      totalOut.textContent = millions(total);
+      if (next >= r.length) {
+        msg.innerHTML = '';
+        msg.append(el('b', null, `Done! Your total: ${millions(total)} counts. NASA’s: ${millions(A[mol].nasa)}. ` +
+                                 `That’s ${(100 * total / A[mol].nasa).toFixed(0)}% of NASA’s number.`));
+      }
+    }
+    au.querySelector('#au-next').addEventListener('click', addSlice);
+    au.querySelector('#au-all').addEventListener('click', () => { while (next < A[mol].readings.length) addSlice(); });
+    au.querySelector('#au-reset').addEventListener('click', () => load(mol));
+    molBtns.forEach(x => x.addEventListener('click', () => load(x.dataset.mol)));
+    load('benzene');
+  }
+
+  // ---- Bump cards with filters ----
+  const bc = document.getElementById('try-cards');
+  if (bc) {
+    const grid = bc.querySelector('.cards'), detail = bc.querySelector('#bc-detail');
+    const filterBtns = [...bc.querySelectorAll('[data-filter]')];
+    const filters = { all: c => true, within: c => c.within, off: c => !c.within, named: c => !!c.name, benzene: c => c.benzene >= 0.8 };
+    function render(f) {
+      grid.innerHTML = '';
+      detail.textContent = 'Tap a card to see its details.';
+      pick(filterBtns, filterBtns.find(x => x.dataset.filter === f));
+      TRY.cards.filter(filters[f]).forEach(c => {
+        const b = el('button', 'card');
+        b.append(el('b', null, `Bump ${c.peak}`), el('br'), document.createTextNode(c.name || `Tube ${c.tube}, no name`), el('br'),
+                 el('span', c.within ? 'ok' : 'no', c.within ? '✓ matched' : `≈ off by ${num(Math.abs(c.diff), 1)} s`));
+        b.addEventListener('click', () => {
+          pick([...grid.querySelectorAll('.card')], b);
+          detail.textContent = `Bump ${c.peak} (tube ${c.tube}${c.name ? ', ' + c.name : ', no name from NASA'}): ` +
+            `NASA’s time ${num(c.team)} s, raw data ${num(c.our, 1)} s. Strongest pieces: ${c.masses}. ` +
+            `Looks like benzene ${c.benzene.toFixed(2)}, toluene ${c.toluene.toFixed(2)}.`;
+        });
+        grid.append(b);
+      });
+    }
+    filterBtns.forEach(x => x.addEventListener('click', () => render(x.dataset.filter)));
+    render('all');
+  }
+
+  // ---- Solve the case: rule out suspects one clue at a time ----
+  const cs = document.getElementById('try-case');
+  if (cs) {
+    const K = TRY.case;
+    let step = 0;
+    const grid = cs.querySelector('.cards'), clues = cs.querySelector('#cs-clues'), btn = cs.querySelector('#cs-next');
+    const cards = K.suspects.map(s => {
+      const d = el('div', 'card suspect');
+      d.append(el('b', null, s.name), el('br'), document.createTextNode(`${s.formula} · weighs ${s.mw}`), el('div', 'why'));
+      grid.append(d);
+      return d;
+    });
+    // One rule per clue: return a reason to rule the suspect out, or null if it still fits
+    const rules = [
+      s => s.mw >= K.heaviest ? null : `Out: weighs ${s.mw}, lighter than the ${K.heaviest} piece`,
+      s => s.mw <= K.heaviest ? null : `Out: weighs ${s.mw}, but nothing heavier than ${K.heaviest} shows up`,
+      s => s.has_n ? null : 'Out: has no nitrogen',
+      s => Math.abs(s.carbons - K.carbons) <= 1 ? null : `Out: has ${s.carbons} carbon atoms`,
+      s => null,
+    ];
+    function reset() {
+      step = 0; clues.innerHTML = '';
+      cards.forEach(c => { c.classList.remove('out', 'winner'); c.querySelector('.why').textContent = ''; });
+      btn.textContent = `Reveal clue 1 of ${K.clues.length}`;
+    }
+    btn.addEventListener('click', () => {
+      if (step >= K.clues.length) { reset(); return; }
+      clues.append(el('li', null, K.clues[step]));
+      K.suspects.forEach((s, i) => {
+        if (cards[i].classList.contains('out')) return;
+        const why = rules[step](s);
+        if (why) { cards[i].classList.add('out'); cards[i].querySelector('.why').textContent = why; }
+      });
+      step++;
+      if (step < K.clues.length) { btn.textContent = `Reveal clue ${step + 1} of ${K.clues.length}`; return; }
+      cards.forEach((c, i) => {
+        if (c.classList.contains('out')) return;
+        c.classList.add('winner');
+        c.querySelector('.why').append(el('span', 'ok', `✓ Fits every clue (similarity ${K.suspects[i].score.toFixed(3)})`));
+      });
+      clues.append(el('li', null, `Case closed: ${K.best}, a by-product of the lab chemical from Earth.`));
+      btn.textContent = 'Start over';
+    });
+    reset();
+  }
+})();
+"""
+
+try_script = ('<script>\nconst TRY = ' + json.dumps(try_data, ensure_ascii=False) + ';\n' + TRY_JS + '\n</script>')
 
 areas_fig, area_ratio = areas_figure()
 benzene_score = comparison.set_index('peak').loc[13, 'benzene']
@@ -561,6 +1103,7 @@ page = f"""<!doctype html>
   footer {{ color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); margin-top: 56px; padding-top: 16px; }}
   table.clues th, table.clues td {{ text-align: left; white-space: normal; vertical-align: top; }}
   table.clues td:first-child {{ white-space: nowrap; }}
+{TRY_CSS}
 </style>
 </head>
 <body>
@@ -591,6 +1134,8 @@ those raw numbers, and checks whether they match what NASA’s science team repo
 <p>The weights are written as <b>m/z</b> numbers. A whole benzene molecule weighs 78, so benzene shows up strongly at m/z 78.
 Toluene, a close relative of benzene, breaks mostly into a piece that weighs 91.</p>
 
+{try_lab}
+
 <h2><span class="num">Graph 1</span> · The whole experiment</h2>
 <h3>What you’re looking at</h3>
 <p>A timeline of the whole four-hour experiment. The top panel is the oven temperature: the rock is baked up to 831 °C.
@@ -601,6 +1146,8 @@ the three stages: baking, then two sorting runs through two different tubes. Gap
 <h3>What it tells us</h3>
 <p>This is the map of the experiment. The tall, thin spikes on the right are single chemicals coming out of the second tube,
 and that’s where NASA’s team found benzene and toluene. Try dragging across the spikes to zoom in.</p>
+
+{try_overview}
 
 <h2><span class="num">Graph 2</span> · The sorting runs (chromatograms)</h2>
 <h3>What you’re looking at</h3>
@@ -618,6 +1165,8 @@ two the team named.</p>
 <div class="result"><b>{within} of {len(comparison)}</b> of NASA’s bumps show up in the raw data at the same moment, to within
 one measurement (the instrument measures each weight only every {scan_time[4]:.1f} to {scan_time[1]:.1f} seconds). The others
 are wide or overlapping bumps that are hard to pin down. The full list is in the table further down.</div>
+
+{try_race}
 
 <h2><span class="num">Graph 3</span> · Chemical fingerprints</h2>
 <h3>What you’re looking at</h3>
@@ -637,6 +1186,8 @@ For example, bumps 21 to 23 look a lot like benzene but have no name, and bumps 
 which might mean a heavier cousin of toluene such as xylene. Those are open questions, not results.</p>
 <div class="chart">{chart(explorer_figure())}</div>
 
+{try_fingerprint}
+
 <h2><span class="num">Graph 4</span> · How much</h2>
 <h3>What you’re looking at</h3>
 <p>Close-ups of the benzene bump and the toluene bump. Each dot is one measurement. The shaded area under a bump measures
@@ -650,6 +1201,8 @@ how much of that chemical there was, and NASA’s team measures it the same way.
 <p>Starting from the raw numbers, we get the same amounts NASA reported. These areas measure the size of the signal, not
 grams: turning them into an actual amount needs the instrument’s calibration.</p>
 
+{try_areas}
+
 <h2>Every bump, NASA vs. the raw data</h2>
 <p>Times are seconds after the gas entered the tube. “Strongest masses” are the weights that rise most at that moment
 (45 and up). The two bumps NASA named are in bold.</p>
@@ -658,7 +1211,11 @@ grams: turning them into an actual amount needs the instrument’s calibration.<
 {table_rows}
 </table></div>
 
+{try_cards}
+
 {mystery_section}
+
+{try_case}
 
 <h2>What this does not show</h2>
 <ul>
@@ -682,6 +1239,7 @@ grams: turning them into an actual amount needs the instrument’s calibration.<
 </ul>
 <footer>Made with Python (pandas, plotly) for CS85. Graphs are built directly from NASA’s public data.</footer>
 </main>
+{try_script}
 </body>
 </html>
 """
